@@ -23,6 +23,7 @@ const RULE_LABELS: Record<Rule, [string, string]> = {
     joint: ["joint problem", "joint problems"],
     clearance: ["blocked clearance", "blocked clearances"],
     seat: ["seat facing a wall", "seats facing a wall"],
+    view: ["screen view problem", "screen view problems"],
 };
 
 const snap = (v: number): number => Math.round(v / SNAP) * SNAP;
