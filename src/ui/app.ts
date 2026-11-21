@@ -225,10 +225,12 @@ export class App {
             );
         }
         if (!open) return;
-        for (const g of groups) {
+        const items = groups.map((g) => {
             const times = g.count > 1 ? ` (×${g.count})` : "";
-            this.warnings.append(h("button", { class: "warn", title: "Jump to this point", onClick: () => this.seek(g.start) }, `${g.message}${times} ${this.rangeText(g)}`));
-        }
+            return h("button", { class: "warn", title: "Jump to this point", onClick: () => this.seek(g.start) }, `${g.message}${times} ${this.rangeText(g)}`);
+        });
+        if (long) this.warnings.append(h("div", { class: "warn-list" }, ...items));
+        else this.warnings.append(...items);
     }
 
     private seek(t: number): void {
