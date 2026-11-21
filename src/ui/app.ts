@@ -1,5 +1,5 @@
 import { CATALOG, moduleType, placedFootprint, placedParts, resolvedConfig, resolvedState } from "../model/catalog";
-import { clashes, type ClashSide, type TimedClash, transitionClashes } from "../model/collision";
+import { restViolations, stateViolations, type TimedViolation, transitionViolations, zoneStatus } from "../model/rules";
 import { addMode, addModule, removeMode, removeModule, renameMode, setModeParam, setRoom, updateModule } from "../model/edit";
 import { PRESETS } from "../model/presets";
 import { parseSetupText, serializeSetup } from "../model/setup";
@@ -45,7 +45,8 @@ export class App {
     private t = 0;
     private playing: number | undefined;
     private dragStart: { x: number; z: number } | undefined;
-    private clashCache: { key: string; list: TimedClash[] } | undefined;
+    private clashCache: { key: string; list: TimedViolation[] } | undefined;
+    private showZones = true;
     private positionInputs: { x: HTMLInputElement; z: HTMLInputElement } | undefined;
     private readonly view: RoomView;
     private readonly sidebar: HTMLElement;
@@ -153,42 +154,36 @@ export class App {
     private updateScene(): void {
         const states = transitionStates(this.setup, this.from, this.to, this.t);
         const parts = this.setup.modules.flatMap((m) => placedParts(m, states[m.id]));
-        const now = clashes(this.setup, states);
+        const resting = this.t <= 0 || this.t >= 1;
+        const now = resting ? restViolations(this.setup, states) : stateViolations(this.setup, states);
         this.view.setRoom(this.setup.room);
         this.view.setParts(parts, this.selected, new Set(now.flatMap((c) => c.partKeys)));
+        this.view.setZones(this.showZones && resting ? zoneStatus(this.setup, states) : []);
         this.updateBarValues();
         this.renderWarnings();
     }
 
-    private transitionWarnings(): TimedClash[] {
+    private transitionWarnings(): TimedViolation[] {
         const key = `${this.fromId}>${this.toId}`;
-        if (this.clashCache?.key !== key) this.clashCache = { key, list: transitionClashes(this.setup, this.from, this.to) };
+        if (this.clashCache?.key !== key) this.clashCache = { key, list: transitionViolations(this.setup, this.from, this.to) };
         return this.clashCache.list;
     }
 
-    private moduleName(id: string): string {
-        return this.setup.modules.find((m) => m.id === id)?.name ?? id;
-    }
-
-    private side(s: ClashSide): string {
-        return "wall" in s ? "the wall" : `${s.label} (${this.moduleName(s.moduleId)})`;
+    private when(t: number): string {
+        if (t <= 0) return `in ${this.from.name}`;
+        if (t >= 1) return `in ${this.to.name}`;
+        return `at ${Math.round(t * 100)}%`;
     }
 
     private renderWarnings(): void {
         const list = this.transitionWarnings();
         this.warnings.replaceChildren();
         if (list.length === 0) {
-            this.warnings.append(h("span", { class: "ok" }, `Clear: nothing collides between ${this.from.name} and ${this.to.name}`));
+            this.warnings.append(h("span", { class: "ok" }, `Plausible: no clipping, everything supported and every clearance free from ${this.from.name} to ${this.to.name}`));
             return;
         }
         for (const c of list) {
-            this.warnings.append(
-                h(
-                    "button",
-                    { class: "warn", title: "Jump to this point", onClick: () => this.seek(c.t) },
-                    `${c.a.label} hits ${this.side(c.b)} at ${Math.round(c.t * 100)}%`,
-                ),
-            );
+            this.warnings.append(h("button", { class: "warn", title: "Jump to this point", onClick: () => this.seek(c.t) }, `${c.message} ${this.when(c.t)}`));
         }
     }
 
@@ -379,18 +374,32 @@ export class App {
     }
 
     private roomSection(): HTMLElement {
-        const { width, depth } = this.setup.room;
+        const room = this.setup.room;
         return h(
             "section",
             {},
             h("h2", {}, "Room"),
             h(
                 "div",
-                { class: "grid2" },
-                numberField("Width", width, 0.05, (v) => this.commit(setRoom(this.setup, { width: v, depth }))).row,
-                numberField("Depth", depth, 0.05, (v) => this.commit(setRoom(this.setup, { width, depth: v }))).row,
+                { class: "grid3" },
+                numberField("Width", room.width, 0.05, (v) => this.commit(setRoom(this.setup, { ...room, width: v }))).row,
+                numberField("Depth", room.depth, 0.05, (v) => this.commit(setRoom(this.setup, { ...room, depth: v }))).row,
+                numberField("Height", room.height, 0.05, (v) => this.commit(setRoom(this.setup, { ...room, height: v }))).row,
             ),
-            h("p", { class: "hint" }, `Floor area ${(width * depth).toFixed(1)} m² · grid 0.5 m · window at the back wall`),
+            h(
+                "label",
+                { class: "check" },
+                h("input", {
+                    type: "checkbox",
+                    checked: this.showZones,
+                    onChange: (e: Event) => {
+                        this.showZones = (e.target as HTMLInputElement).checked;
+                        this.updateScene();
+                    },
+                }),
+                h("span", {}, "Show clearances (free floor a mode needs: green when free, red when blocked)"),
+            ),
+            h("p", { class: "hint" }, `Floor area ${(room.width * room.depth).toFixed(1)} m² · grid 0.5 m · window at the back wall`),
         );
     }
 
@@ -581,7 +590,11 @@ export class App {
         const type = moduleType(m.type);
         const state = resolvedState(type, mode.states[m.id]);
         const travel = resolvedConfig(m).travel ?? 1;
-        const describe = (key: string, v: number): string => (key === "slide" ? `${(v * travel).toFixed(2)} m` : v === 0 ? "folded" : `${Math.round(v * 100)}%`);
+        const describe = (key: string, v: number): string => {
+            if (key === "slide") return `${(v * travel).toFixed(2)} m`;
+            if (key === "turn") return v === 0 ? "bed side out" : v === 1 ? "desk side out" : `${Math.round(v * 100)}%`;
+            return v === 0 ? "folded" : `${Math.round(v * 100)}%`;
+        };
         return h(
             "div",
             { class: "state" },

@@ -22,11 +22,17 @@ describe("parseSetup", () => {
         });
         expect(parseSetup({ ...preset, modules: [{ ...preset.modules[0], rotation: 45 }] })).toMatchObject({ ok: false });
         expect(parseSetup({ ...preset, room: { width: 0.5, depth: 4 } })).toMatchObject({ ok: false });
+        expect(parseSetup({ ...preset, room: { width: 3, depth: 4, height: 1.9 } })).toMatchObject({ ok: false, error: expect.stringContaining("height") });
         expect(parseSetup({ ...preset, modes: [] })).toMatchObject({ ok: false });
         expect(parseSetup({ ...preset, modules: [preset.modules[0], preset.modules[0]] })).toMatchObject({
             ok: false,
             error: expect.stringContaining("duplicate"),
         });
+    });
+
+    it("gives setups saved before room heights existed the default height", () => {
+        const flat = { width: preset.room.width, depth: preset.room.depth };
+        expect(parseSetup({ ...preset, room: flat })).toMatchObject({ ok: true, setup: { room: { ...flat, height: 2.6 } } });
     });
 
     it("drops mode states of modules that are not in the setup", () => {
@@ -73,6 +79,6 @@ describe("editing", () => {
     it("merges configuration patches and clamps the room size", () => {
         const setup = updateModule(preset, "wall-1", { config: { length: 5.3 } });
         expect(setup.modules[0]!.config).toEqual({ length: 5.3, travel: 3.1 });
-        expect(setRoom(preset, { width: 0.2, depth: 40 }).room).toEqual({ width: 1.5, depth: 12 });
+        expect(setRoom(preset, { width: 0.2, depth: 40, height: 9 }).room).toEqual({ width: 1.5, depth: 12, height: 4 });
     });
 });

@@ -9,14 +9,17 @@ Vite + TypeScript (strict) + Three.js, Vitest for unit tests. No framework: the 
 ## Layout
 
 - `src/model/`: pure TypeScript, no Three.js and no DOM. Everything here is unit tested.
-  - `types.ts`: `Setup` (room, modules, modes), `Part` (an axis-aligned box in metres).
-  - `catalog.ts`: module types with parameters, configuration and parametric geometry; placement and quarter-turn rotation (the anchor `x, z` is always the minimum corner of the rest footprint).
+  - `types.ts`: `Setup` (room with height, modules, modes), `Part` (a box in its link's frame plus the pose that places it), `Zone` (clearance that must stay free).
+  - `geometry.ts`: vectors, poses and oriented boxes; the separating axis test.
+  - `mechanism.ts`: links, joints (fixed, slide, hinge with limits), clearance zones and loads; places a mechanism in the room.
+  - `catalog.ts`: module types with parameters, configuration and their jointed mechanisms; placement and quarter-turn rotation (the anchor `x, z` is always the minimum corner of the rest footprint).
   - `transition.ts`: interpolation between two modes in three stages (fold, move, unfold).
-  - `collision.ts`: clashes between moving parts and other modules or the room walls, sampled along a transition.
+  - `rules.ts`: the plausibility checks (clipping, room, floor, ceiling, support, joints, clearances, seats) for a state, a mode and a sampled transition.
   - `setup.ts`: JSON validation (`parseSetup`) and serialization. `edit.ts`: immutable editing operations. `presets.ts`: ready-made setups.
 - `src/view/scene.ts`: the Three.js scene; syncs one mesh per part key, picking and floor dragging.
 - `src/ui/app.ts`: sidebar, transition bar, localStorage (`shiftroom.setup.v1`), save/load JSON.
-- `tests/`: Vitest unit tests for the model.
+- `tests/`: Vitest unit tests for the model, including the sweep of every preset through every transition.
+- `docs/mechanisms.md`: how each module works inside, joint by joint, and what the checks enforce.
 
 Coordinates: metres; x across the room width from the left wall, z into the depth from the window wall, y up.
 
@@ -33,5 +36,6 @@ Branch, commit (Conventional Commits), push, pull request, merge, with the globa
 ## Rules
 
 - Keep `src/model/` free of rendering and DOM code, and cover model changes with tests.
-- Adding a module type: add a `ModuleType` to `CATALOG` in `catalog.ts`; parameters of kind `extend` fold before and unfold after parameters of kind `move` in transitions.
+- Adding a module type: add a `ModuleType` to `CATALOG` in `catalog.ts`, built as links and joints so the rules can check it, and describe its mechanism in `docs/mechanisms.md`; parameters of kind `extend` fold before and unfold after parameters of kind `move` in transitions.
+- Every preset must pass every rule in every mode and transition; `tests/rules.test.ts` enforces it.
 - No code comments except doc comments (`/** */`).

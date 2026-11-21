@@ -9,6 +9,9 @@ const ROTATIONS: readonly Rotation[] = [0, 90, 180, 270];
 /** Smallest and largest room side the configurator accepts, in metres. */
 export const ROOM_LIMITS = { min: 1.5, max: 12 } as const;
 
+/** Range and default of the clear room height, in metres; setups saved before heights existed get the default. */
+export const HEIGHT_LIMITS = { min: 2.2, max: 4, fallback: 2.6 } as const;
+
 class SetupError extends Error {}
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -78,6 +81,10 @@ export function parseSetup(input: unknown): ParseResult {
         for (const [k, v] of [["width", width], ["depth", depth]] as const) {
             if (v < ROOM_LIMITS.min || v > ROOM_LIMITS.max) throw new SetupError(`room.${k} must be between ${ROOM_LIMITS.min} and ${ROOM_LIMITS.max} m`);
         }
+        const height = num(input.room.height ?? HEIGHT_LIMITS.fallback, "room.height");
+        if (height < HEIGHT_LIMITS.min || height > HEIGHT_LIMITS.max) {
+            throw new SetupError(`room.height must be between ${HEIGHT_LIMITS.min} and ${HEIGHT_LIMITS.max} m`);
+        }
         if (!Array.isArray(input.modules)) throw new SetupError("modules must be an array");
         if (!Array.isArray(input.modes) || input.modes.length === 0) throw new SetupError("modes must be a non-empty array");
         const modules = input.modules.map(parseModule);
@@ -85,7 +92,7 @@ export function parseSetup(input: unknown): ParseResult {
         const ids = new Set(modules.map((m) => m.id));
         const modes = input.modes.map((m, i) => parseMode(m, i, ids));
         unique(modes.map((m) => m.id), "mode");
-        return { ok: true, setup: { version: 1, name: str(input.name ?? "Untitled", "name"), room: { width, depth }, modules, modes } };
+        return { ok: true, setup: { version: 1, name: str(input.name ?? "Untitled", "name"), room: { width, depth, height }, modules, modes } };
     } catch (e) {
         if (e instanceof SetupError) return { ok: false, error: e.message };
         throw e;

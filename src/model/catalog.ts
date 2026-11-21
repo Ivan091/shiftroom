@@ -1,4 +1,6 @@
-import type { Box, Finish, ModuleInstance, ModuleState, ParamSpec, Part, Rotation } from "./types";
+import { compose, type Pose, translation, vec, type Vec3 } from "./geometry";
+import { box, type Link, type LoadSpec, type Mechanism, piece, type Piece, placeMechanism, span, type ZoneSpec } from "./mechanism";
+import type { Box, ModuleInstance, ModuleState, ParamSpec, Part, PlacedModule, Rotation } from "./types";
 
 /** A configuration value of a module type, such as its length. */
 export interface ConfigSpec {
@@ -11,50 +13,71 @@ export interface ConfigSpec {
     readonly options?: readonly number[];
 }
 
-/** A part in the module's local frame, before rotation and placement. */
-export interface LocalPart {
-    readonly key: string;
-    readonly label: string;
-    readonly finish: Finish;
-    readonly box: Box;
-    readonly moving: boolean;
-    readonly solid: boolean;
-}
-
-/** A catalogue entry: parameters, configuration and parametric geometry of one kind of module. */
+/** A catalogue entry: parameters, configuration and the jointed mechanism of one kind of module. */
 export interface ModuleType {
     readonly id: string;
     readonly label: string;
     readonly params: readonly ParamSpec[];
     readonly config: readonly ConfigSpec[];
     readonly footprint: (config: Readonly<Record<string, number>>) => { readonly w: number; readonly d: number };
-    readonly localParts: (config: Readonly<Record<string, number>>, state: ModuleState) => readonly LocalPart[];
+    readonly mechanism: (config: Readonly<Record<string, number>>, state: ModuleState) => Mechanism;
 }
 
-/** Dimensions of the Shiftroom sliding module, in metres. */
+/** Dimensions of the Shiftroom carcass, in metres; see docs/mechanisms.md for the drawings. */
 export const SLIDING = {
     thickness: 0.5,
-    height: 2.3,
+    height: 2.35,
     activeLength: 2.0,
     lengths: [2.6, 4.0, 5.3],
-    bedReach: 2.0,
-    bedWidth: 1.6,
-    deskReach: 0.7,
-    deskWidth: 1.8,
+    board: 0.02,
+    spineX: 0.12,
+    spineDepth: 0.03,
+    plinth: 0.08,
 } as const;
 
-const box = (x: number, y: number, z: number, w: number, h: number, d: number): Box => ({ x, y, z, w, h, d });
+/**
+ * The fold-down bed on the +x face. Its frame turns about a horizontal pivot near the floor; stored
+ * upright, its underside closes the bed cavity. `head` is how far the frame reaches behind the pivot.
+ */
+export const BED = {
+    pivotX: 0.32,
+    pivotY: 0.35,
+    pivotZ: 0.16,
+    head: 0.1,
+    length: 2.0,
+    width: 1.68,
+    rail: 0.04,
+    frameDepth: 0.25,
+    deck: 0.05,
+    below: 0.14,
+    legAt: 1.8,
+    leg: 0.04,
+} as const;
 
-const part = (key: string, label: string, finish: Finish, b: Box, moving = false, solid = true): LocalPart => ({
-    key,
-    label,
-    finish,
-    box: b,
-    moving,
-    solid,
-});
+/** The drop-leaf desk on the -x face: the leaf hangs from a hinge at desk height and is propped by two swing-out gate legs. */
+export const DESK = {
+    hingeY: 0.75,
+    depth: 0.7,
+    width: 1.8,
+    z: 0.1,
+    top: 0.025,
+    gateX: 0.04,
+    gate: 0.02,
+    gateLength: 0.66,
+} as const;
+
+/** The turning module: how far it pulls away from the wall before it turns. */
+export const TURNING = { pull: 0.85, pin: 0.03 } as const;
+
+const QUARTER = Math.PI / 2;
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
+
+/** Progress of a sub-step that runs while `v` goes from `from` to `to`. */
+const ramp = (v: number, from: number, to: number): number => clamp01((v - from) / (to - from));
+
+const isOpen = (v: number): boolean => v >= 1 - 1e-6;
+const isClosed = (v: number): boolean => v <= 1e-6;
 
 const cfg = (config: Readonly<Record<string, number>>, spec: ConfigSpec): number => {
     const raw = config[spec.key];
@@ -68,6 +91,7 @@ const st = (state: ModuleState, spec: ParamSpec): number => {
 };
 
 const slideParam: ParamSpec = { key: "slide", label: "Position on rail", kind: "move", fallback: 0 };
+const turnParam: ParamSpec = { key: "turn", label: "Pull out, turn, push back", kind: "move", fallback: 0 };
 const bedParam: ParamSpec = { key: "bed", label: "Bed", kind: "extend", fallback: 0 };
 const deskParam: ParamSpec = { key: "desk", label: "Desk", kind: "extend", fallback: 0 };
 const lengthSpec: ConfigSpec = {
@@ -81,51 +105,264 @@ const lengthSpec: ConfigSpec = {
 };
 const travelSpec: ConfigSpec = { key: "travel", label: "Rail travel", fallback: 2.6, min: 0.5, max: 8, step: 0.05 };
 
+const t = SLIDING.thickness;
+const b = SLIDING.board;
+const top = SLIDING.height - b;
+const active = SLIDING.activeLength;
+
+/** Panels of the bed and desk section, z 0..2.0: the cavities are the empty space between them. */
+function activeCarcass(): Piece[] {
+    const label = "Module body";
+    const sx = SLIDING.spineX;
+    const sx1 = sx + SLIDING.spineDepth;
+    const bedPivotZ1 = BED.pivotZ + BED.width;
+    return [
+        piece("plinth", label, "panel", span(sx1, t - b, 0, SLIDING.plinth, b, active - b), { rest: "floor" }),
+        piece("bottom", label, "panel", span(sx, t, SLIDING.plinth, SLIDING.plinth + b, b, active - b)),
+        piece("spine", label, "panel", span(sx, sx1, 0, top, b, active - b), { rest: "floor" }),
+        piece("end", label, "panel", span(0, t, 0, top, 0, b), { rest: "floor" }),
+        piece("divider", label, "panel", span(0, t, 0, top, active - b, active), { rest: "floor" }),
+        piece("top", label, "panel", span(0, t, top, SLIDING.height, 0, active)),
+        piece("shelves", "Shelves above the desk", "panel", span(0, sx, DESK.hingeY, top, b, active - b)),
+        piece("bracket-a", "Bed pivot bracket", "post", span(BED.pivotX - 0.04, BED.pivotX + 0.04, BED.pivotY - 0.04, BED.pivotY + 0.04, b, BED.pivotZ)),
+        piece("bracket-b", "Bed pivot bracket", "post", span(BED.pivotX - 0.04, BED.pivotX + 0.04, BED.pivotY - 0.04, BED.pivotY + 0.04, bedPivotZ1, active - b)),
+        piece("stile-a", "Gate leg hinge stile", "post", span(DESK.gateX - 0.01, DESK.gateX + 0.01, 0, DESK.hingeY - DESK.top, b, gateAZ())),
+        piece("stile-b", "Gate leg hinge stile", "post", span(DESK.gateX - 0.01, DESK.gateX + 0.01, 0, DESK.hingeY - DESK.top, gateBZ(), active - b)),
+    ];
+}
+
+const gateAZ = (): number => DESK.z + 0.01;
+const gateBZ = (): number => DESK.z + DESK.width - 0.01;
+
+/**
+ * The bed frame and its two folding legs. `open` runs from 0 (stored upright) to 1 (lowered). The
+ * frame turns down over the whole range; the legs swing out from under the deck between 35 % and
+ * 80 %, so they are straight before the frame comes down onto them.
+ */
+function bedLinks(parent: string, open: number): Link[] {
+    const angle = QUARTER * (1 - open);
+    const legs = -QUARTER * (1 - ramp(open, 0.35, 0.8));
+    const x0 = -BED.head;
+    const x1 = BED.length - BED.head;
+    const y0 = -BED.below;
+    const y1 = y0 + BED.frameDepth;
+    const deckTop = y0 + BED.deck;
+    const w = BED.width;
+    const r = BED.rail;
+    const legReach = BED.pivotY - BED.below;
+    const label = "Bed";
+    const leg = (key: string, z: number): Link => ({
+        key,
+        label: "Bed leg",
+        parent: "bed",
+        joint: { kind: "hinge", origin: vec(BED.legAt, y0, z), axis: vec(0, 0, 1), value: legs, min: -QUARTER, max: 0 },
+        pieces: [piece("leg", "Bed leg", "post", span(0, BED.leg, -legReach, 0, 0, BED.leg), isOpen(open) ? { rest: "floor" } : {})],
+    });
+    return [
+        {
+            key: "bed",
+            label,
+            parent,
+            joint: { kind: "hinge", origin: vec(BED.pivotX, BED.pivotY, BED.pivotZ), axis: vec(0, 0, 1), value: angle, min: 0, max: QUARTER },
+            pieces: [
+                piece("rail-a", label, "bed", span(x0, x1, y0, y1, 0, r)),
+                piece("rail-b", label, "bed", span(x0, x1, y0, y1, w - r, w)),
+                piece("deck", label, "bed", span(x0, x1, y0, deckTop, r, w - r)),
+                piece("head", label, "bed", span(x0, x0 + b, deckTop, y1, r, w - r)),
+                piece("foot", label, "bed", span(x1 - b, x1, deckTop, y1, r, w - r)),
+                piece("mattress", label, "mattress", span(x0 + b, x1 - b, deckTop, y1, r, w - r)),
+            ],
+        },
+        leg("leg-a", r),
+        leg("leg-b", w - r - BED.leg),
+    ];
+}
+
+/** Where the lowered bed ends, measured from the module's back (x = 0). */
+export const BED_FOOT = BED.pivotX - BED.head + BED.length;
+
+/**
+ * The desk leaf and its two gate legs. The leaf lifts from hanging to level over the first 60 % of
+ * `open`; only then do the gate legs swing out under it, and they fold away first when it closes.
+ */
+function deskLinks(parent: string, open: number): Link[] {
+    const leaf = QUARTER * (1 - ramp(open, 0, 0.6));
+    const swing = ramp(open, 0.6, 1);
+    const gateHeight = DESK.hingeY - DESK.top;
+    const loaded = isOpen(open) ? { rest: "floor" as const } : {};
+    return [
+        {
+            key: "desk",
+            label: "Desk",
+            parent,
+            joint: { kind: "hinge", origin: vec(0, DESK.hingeY, DESK.z), axis: vec(0, 0, 1), value: leaf, min: 0, max: QUARTER },
+            pieces: [piece("top", "Desk", "desk", span(-DESK.depth, 0, -DESK.top, 0, 0, DESK.width))],
+        },
+        {
+            key: "gate-a",
+            label: "Desk gate leg",
+            parent,
+            joint: { kind: "hinge", origin: vec(DESK.gateX, 0, gateAZ()), axis: vec(0, 1, 0), value: -QUARTER * swing, min: -QUARTER, max: 0 },
+            pieces: [piece("gate", "Desk gate leg", "post", span(0, DESK.gate, 0, gateHeight, 0, DESK.gateLength), loaded)],
+        },
+        {
+            key: "gate-b",
+            label: "Desk gate leg",
+            parent,
+            joint: { kind: "hinge", origin: vec(DESK.gateX, 0, gateBZ()), axis: vec(0, 1, 0), value: QUARTER * swing, min: 0, max: QUARTER },
+            pieces: [piece("gate", "Desk gate leg", "post", span(0, DESK.gate, 0, gateHeight, -DESK.gateLength, 0), loaded)],
+        },
+    ];
+}
+
+/** Clearances of an open bed and desk, in the carcass frame of the section that holds them. */
+function activeZones(link: string, bed: number, desk: number): { zones: ZoneSpec[]; loads: LoadSpec[] } {
+    const zones: ZoneSpec[] = [];
+    const loads: LoadSpec[] = [];
+    const z0 = BED.pivotZ;
+    const z1 = BED.pivotZ + BED.width;
+    if (isOpen(bed)) {
+        zones.push(
+            { key: "bed-foot", label: "Space to get into bed", link, group: "bed-access", box: span(BED_FOOT, BED_FOOT + 0.5, 0, 1.8, z0, z1) },
+            { key: "bed-side-a", label: "Space to get into bed", link, group: "bed-access", box: span(t, BED_FOOT, 0, 1.8, z0 - 0.5, z0) },
+            { key: "bed-side-b", label: "Space to get into bed", link, group: "bed-access", box: span(t, BED_FOOT, 0, 1.8, z1, z1 + 0.5) },
+        );
+        loads.push({ link: "bed", label: "Bed", props: ["leg-a", "leg-b"] });
+    }
+    if (isOpen(desk)) {
+        const mid = DESK.z + DESK.width / 2;
+        zones.push(
+            { key: "desk-knees", label: "Knee room under the desk", link, box: span(-DESK.depth, 0, 0, 0.62, mid - 0.4, mid + 0.4) },
+            { key: "desk-chair", label: "Desk chair", link, box: span(-DESK.depth - 0.7, -DESK.depth, 0, 1.0, mid - 0.35, mid + 0.35) },
+        );
+        loads.push({ link: "desk", label: "Desk", props: ["gate-a", "gate-b"] });
+    }
+    return { zones, loads };
+}
+
 const slidingWall: ModuleType = {
     id: "sliding-wall",
     label: "Sliding wall module",
     params: [slideParam, bedParam, deskParam],
     config: [lengthSpec, travelSpec],
-    footprint: (config) => ({ w: cfg(config, travelSpec) + SLIDING.thickness, d: cfg(config, lengthSpec) }),
-    localParts: (config, state) => {
+    footprint: (config) => ({ w: cfg(config, travelSpec) + t, d: cfg(config, lengthSpec) }),
+    mechanism: (config, state) => {
         const length = cfg(config, lengthSpec);
         const travel = cfg(config, travelSpec);
-        const t = SLIDING.thickness;
-        const active = Math.min(SLIDING.activeLength, length);
-        const x0 = st(state, slideParam) * travel;
-        const bed = st(state, bedParam) * SLIDING.bedReach;
-        const desk = st(state, deskParam) * SLIDING.deskReach;
-        const bedZ = (active - SLIDING.bedWidth) / 2;
-        const deskZ = (active - SLIDING.deskWidth) / 2;
-        const parts: LocalPart[] = [
-            part("rail-a", "Rail", "rail", box(0, 0, 0.12, travel + t, 0.01, 0.06), false, false),
-            part("rail-b", "Rail", "rail", box(0, 0, length - 0.18, travel + t, 0.01, 0.06), false, false),
-            part("active", "Module body", "panel", box(x0, 0, 0, t, SLIDING.height, active), true),
-            part("wardrobe", "Wardrobe", "wardrobe", box(x0, 0, active, t, SLIDING.height, length - active), true),
-        ];
-        if (length - active > 0.01) {
-            parts.push(
-                part("wardrobe-split", "Wardrobe", "panel", box(x0 + t / 2 - 0.01, 0, active, 0.02, SLIDING.height + 0.01, length - active), true, false),
+        const bed = st(state, bedParam);
+        const desk = st(state, deskParam);
+        const wardrobe = length - active;
+        const pieces = activeCarcass();
+        const zones: ZoneSpec[] = [];
+        if (wardrobe > 0.01) {
+            const spine = t / 2;
+            pieces.push(
+                piece("wardrobe-plinth", "Wardrobe", "panel", span(b, t - b, 0, SLIDING.plinth, active, length - b), { rest: "floor" }),
+                piece("wardrobe-desk-side", "Wardrobe", "wardrobe", span(0, spine - b / 2, SLIDING.plinth, top, active, length - b)),
+                piece("wardrobe-spine", "Wardrobe", "panel", span(spine - b / 2, spine + b / 2, SLIDING.plinth, top, active, length - b)),
+                piece("wardrobe-bed-side", "Wardrobe", "wardrobe", span(spine + b / 2, t, SLIDING.plinth, top, active, length - b)),
+                piece("wardrobe-end", "Wardrobe", "panel", span(0, t, 0, top, length - b, length), { rest: "floor" }),
+                piece("wardrobe-top", "Wardrobe", "panel", span(0, t, top, SLIDING.height, active, length)),
             );
+            if (isClosed(desk)) {
+                zones.push({ key: "wardrobe-bed-side", label: "Wardrobe doors (bed side)", link: "body", box: span(t, t + 0.5, 0, 2.1, active, length - b) });
+            }
+            if (isClosed(bed)) {
+                zones.push({ key: "wardrobe-desk-side", label: "Wardrobe doors (desk side)", link: "body", box: span(-0.5, 0, 0, 2.1, active, length - b) });
+            }
         }
-        if (bed > 0.005) {
-            const bx = x0 + t;
-            parts.push(part("bed", "Bed", "bed", box(bx, 0.18, bedZ, bed, 0.17, SLIDING.bedWidth), true));
-            parts.push(part("mattress", "Bed", "mattress", box(bx + 0.02, 0.35, bedZ + 0.03, Math.max(0, bed - 0.04), 0.18, SLIDING.bedWidth - 0.06), true));
-            parts.push(part("bed-leg-a", "Bed", "post", box(bx + bed - 0.06, 0, bedZ + 0.05, 0.04, 0.18, 0.04), true));
-            parts.push(part("bed-leg-b", "Bed", "post", box(bx + bed - 0.06, 0, bedZ + SLIDING.bedWidth - 0.09, 0.04, 0.18, 0.04), true));
-        }
-        if (desk > 0.005) {
-            const dx = x0 - desk;
-            parts.push(part("desk", "Desk", "desk", box(dx, 0.72, deskZ, desk, 0.03, SLIDING.deskWidth), true));
-            parts.push(part("desk-leg-a", "Desk", "post", box(dx + 0.02, 0, deskZ + 0.05, 0.03, 0.72, 0.03), true));
-            parts.push(part("desk-leg-b", "Desk", "post", box(dx + 0.02, 0, deskZ + SLIDING.deskWidth - 0.08, 0.03, 0.72, 0.03), true));
-        }
-        return parts;
+        const open = activeZones("body", bed, desk);
+        const links: Link[] = [
+            {
+                key: "rails",
+                label: "Floor rails",
+                joint: { kind: "fixed", origin: vec(0, 0, 0) },
+                pieces: [
+                    piece("rail-a", "Floor rail", "rail", span(0, travel + t, 0, 0.005, 0.12, 0.18), { solid: false, rest: "floor" }),
+                    piece("rail-b", "Floor rail", "rail", span(0, travel + t, 0, 0.005, length - 0.18, length - 0.12), { solid: false, rest: "floor" }),
+                ],
+            },
+            {
+                key: "body",
+                label: "Module body",
+                parent: "rails",
+                joint: { kind: "slide", origin: vec(0, 0, 0), axis: vec(1, 0, 0), value: st(state, slideParam) * travel, min: 0, max: travel },
+                pieces,
+            },
+            ...bedLinks("body", bed),
+            ...deskLinks("body", desk),
+        ];
+        return { links, zones: [...zones, ...open.zones], loads: open.loads };
     },
 };
 
+const turningModule: ModuleType = {
+    id: "turning",
+    label: "Turning module",
+    params: [turnParam, bedParam, deskParam],
+    config: [],
+    footprint: () => ({ w: TURNING.pull + t, d: active }),
+    mechanism: (_config, state) => {
+        const turn = st(state, turnParam);
+        const bed = st(state, bedParam);
+        const desk = st(state, deskParam);
+        const pull = TURNING.pull * (ramp(turn, 0, 1 / 3) - ramp(turn, 2 / 3, 1));
+        const angle = Math.PI * ramp(turn, 1 / 3, 2 / 3);
+        const centre = vec(t / 2, 0, active / 2);
+        const pin = TURNING.pin;
+        const open = activeZones("body", bed, desk);
+        const links: Link[] = [
+            {
+                key: "track",
+                label: "Floor guide channel",
+                joint: { kind: "fixed", origin: vec(0, 0, 0) },
+                pieces: [piece("channel", "Floor guide channel", "rail", span(centre.x - 0.03, centre.x + TURNING.pull + 0.03, 0, 0.005, centre.z - 0.03, centre.z + 0.03), { solid: false, rest: "floor" })],
+            },
+            {
+                key: "pin",
+                label: "Pivot pin",
+                parent: "track",
+                joint: { kind: "slide", origin: centre, axis: vec(1, 0, 0), value: pull, min: 0, max: TURNING.pull },
+                pieces: [piece("pin", "Pivot pin", "post", span(-0.03, 0.03, 0, pin, -0.03, 0.03), { rest: "floor" })],
+            },
+            {
+                key: "turntable",
+                label: "Module body",
+                parent: "pin",
+                joint: { kind: "hinge", origin: vec(0, pin, 0), axis: vec(0, 1, 0), value: angle, min: 0, max: Math.PI },
+                pieces: [piece("turntable", "Turntable", "post", span(-0.1, 0.1, 0, SLIDING.plinth - pin, -0.05, 0.05))],
+            },
+            {
+                key: "body",
+                label: "Module body",
+                parent: "turntable",
+                joint: { kind: "fixed", origin: vec(-centre.x, -pin, -centre.z) },
+                pieces: turningCarcass(),
+            },
+            ...bedLinks("body", bed),
+            ...deskLinks("body", desk),
+        ];
+        return { links, zones: open.zones, loads: open.loads };
+    },
+};
+
+/** The turning module's carcass: the bed and desk section on two castor plinths, with a gap in the middle for the pivot pin. */
+function turningCarcass(): Piece[] {
+    const gap = 0.12;
+    const mid = active / 2;
+    return activeCarcass().flatMap((p) => {
+        if (p.key !== "plinth") return [p];
+        const { x, y, w, h } = p.box;
+        return [
+            piece("castors-a", "Castor plinth", "panel", box(x, y, b, w, h, mid - gap / 2 - b), { rest: "floor" }),
+            piece("castors-b", "Castor plinth", "panel", box(x, y, mid + gap / 2, w, h, mid - gap / 2 - b), { rest: "floor" }),
+        ];
+    });
+}
+
 const kitchenLength: ConfigSpec = { key: "length", label: "Run length", fallback: 2.4, min: 0.6, max: 5, step: 0.1 };
+
+const fixed = (key: string, label: string, pieces: Piece[]): Link => ({ key, label, joint: { kind: "fixed", origin: vec(0, 0, 0) }, pieces });
 
 const kitchen: ModuleType = {
     id: "kitchen",
@@ -133,13 +370,19 @@ const kitchen: ModuleType = {
     params: [],
     config: [kitchenLength],
     footprint: (config) => ({ w: cfg(config, kitchenLength), d: 0.6 }),
-    localParts: (config) => {
+    mechanism: (config) => {
         const len = cfg(config, kitchenLength);
-        return [
-            part("base", "Kitchen base", "cabinet", box(0, 0, 0.02, len, 0.86, 0.58)),
-            part("top", "Kitchen base", "counter", box(0, 0.86, 0, len, 0.04, 0.6)),
-            part("upper", "Kitchen wall cabinets", "cabinet", box(0, 1.45, 0, len, 0.7, 0.35)),
-        ];
+        return {
+            links: [
+                fixed("kitchen", "Kitchen", [
+                    piece("base", "Kitchen base", "cabinet", span(0, len, 0, 0.86, 0.02, 0.6), { rest: "floor" }),
+                    piece("top", "Kitchen base", "counter", span(0, len, 0.86, 0.9, 0, 0.62)),
+                    piece("upper", "Kitchen wall cabinets", "cabinet", span(0, len, 1.45, 2.15, 0, 0.35), { rest: "wall" }),
+                ]),
+            ],
+            zones: [{ key: "front", label: "Kitchen working space", link: "kitchen", box: span(0, len, 0, 2.0, 0.62, 1.42) }],
+            loads: [],
+        };
     },
 };
 
@@ -149,35 +392,64 @@ const windowPost: ModuleType = {
     params: [],
     config: [],
     footprint: () => ({ w: 0.4, d: 0.3 }),
-    localParts: () => [
-        part("post", "Window shelf post", "post", box(0.17, 0, 0.12, 0.06, 1.05, 0.06)),
-        part("shelf", "Window shelf post", "shelf", box(0, 1.05, 0, 0.4, 0.03, 0.3)),
-        part("base", "Window shelf post", "shelf", box(0.1, 0, 0.05, 0.2, 0.02, 0.2)),
-    ],
+    mechanism: () => ({
+        links: [
+            fixed("post", "Window shelf post", [
+                piece("base", "Window shelf post", "shelf", span(0.1, 0.3, 0, 0.02, 0.05, 0.25), { rest: "floor" }),
+                piece("post", "Window shelf post", "post", span(0.17, 0.23, 0.02, 1.05, 0.12, 0.18)),
+                piece("shelf", "Window shelf post", "shelf", span(0, 0.4, 1.05, 1.08, 0, 0.3)),
+            ]),
+        ],
+        zones: [],
+        loads: [],
+    }),
 };
 
+/** The armchair faces -z in its own frame: its back is at the far side of its footprint. */
 const armchair: ModuleType = {
     id: "armchair",
     label: "Armchair with table",
     params: [],
     config: [],
     footprint: () => ({ w: 1.4, d: 0.85 }),
-    localParts: () => [
-        part("seat", "Armchair", "chair", box(0, 0, 0, 0.8, 0.42, 0.85)),
-        part("back", "Armchair", "chair", box(0, 0.42, 0.65, 0.8, 0.5, 0.2)),
-        part("arm-a", "Armchair", "chair", box(0, 0.42, 0, 0.12, 0.2, 0.65)),
-        part("arm-b", "Armchair", "chair", box(0.68, 0.42, 0, 0.12, 0.2, 0.65)),
-        part("table-top", "Side table", "table", box(0.9, 0.52, 0.15, 0.5, 0.03, 0.5)),
-        part("table-leg", "Side table", "post", box(1.13, 0, 0.38, 0.04, 0.52, 0.04)),
-    ],
+    mechanism: () => ({
+        links: [
+            fixed("chair", "Armchair", [
+                piece("seat", "Armchair", "chair", span(0, 0.8, 0, 0.42, 0, 0.85), { rest: "floor" }),
+                piece("back", "Armchair", "chair", span(0, 0.8, 0.42, 0.92, 0.65, 0.85)),
+                piece("arm-a", "Armchair", "chair", span(0, 0.12, 0.42, 0.62, 0, 0.65)),
+                piece("arm-b", "Armchair", "chair", span(0.68, 0.8, 0.42, 0.62, 0, 0.65)),
+                piece("table-top", "Side table", "table", span(0.9, 1.4, 0.52, 0.55, 0.15, 0.65)),
+                piece("table-leg", "Side table", "post", span(1.13, 1.17, 0, 0.52, 0.38, 0.42), { rest: "floor" }),
+            ]),
+        ],
+        zones: [{ key: "legroom", label: "Legroom in front of the armchair", link: "chair", box: span(0, 0.8, 0, 0.5, -0.45, 0), facing: vec(0, 0, -1) }],
+        loads: [],
+    }),
+};
+
+/** An inward-opening room door; its frame side is z = 0 and the leaf, hinged at x = 0, sweeps a quarter circle into the room. */
+const door: ModuleType = {
+    id: "door",
+    label: "Room door",
+    params: [],
+    config: [],
+    footprint: () => ({ w: 0.8, d: 0.8 }),
+    mechanism: () => ({
+        links: [fixed("door", "Room door", [piece("leaf", "Room door", "door", span(0, 0.8, 0, 2.0, 0, 0.04), { solid: false, rest: "wall" })])],
+        zones: [{ key: "sweep", label: "Door swing", link: "door", box: span(0, 0.8, 0, 2.0, 0, 0.8) }],
+        loads: [],
+    }),
 };
 
 /** Every module type the configurator offers, keyed by id. */
 export const CATALOG: Readonly<Record<string, ModuleType>> = {
     [slidingWall.id]: slidingWall,
+    [turningModule.id]: turningModule,
     [kitchen.id]: kitchen,
     [windowPost.id]: windowPost,
     [armchair.id]: armchair,
+    [door.id]: door,
 };
 
 /** Looks up a module type; unknown ids are rejected when a setup is parsed, so this only fails on programmer error. */
@@ -211,11 +483,18 @@ function rotatePoint(x: number, z: number, rotation: Rotation): [number, number]
     }
 }
 
-function rotateBox(b: Box, rotation: Rotation): Box {
-    const [ax, az] = rotatePoint(b.x, b.z, rotation);
-    const [bx, bz] = rotatePoint(b.x + b.w, b.z + b.d, rotation);
-    return { x: Math.min(ax, bx), y: b.y, z: Math.min(az, bz), w: Math.abs(bx - ax), h: b.h, d: Math.abs(bz - az) };
+function rotateBox(r: Box, rotation: Rotation): Box {
+    const [ax, az] = rotatePoint(r.x, r.z, rotation);
+    const [bx, bz] = rotatePoint(r.x + r.w, r.z + r.d, rotation);
+    return { x: Math.min(ax, bx), y: r.y, z: Math.min(az, bz), w: Math.abs(bx - ax), h: r.h, d: Math.abs(bz - az) };
 }
+
+const QUARTER_TURNS: Record<Rotation, Pose["r"]> = {
+    0: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    90: [0, 0, -1, 0, 1, 0, 1, 0, 0],
+    180: [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+    270: [0, 0, 1, 0, 1, 0, -1, 0, 0],
+};
 
 /**
  * Rest footprint of a placed module in room coordinates. The module's anchor (x, z) is always the
@@ -228,23 +507,23 @@ export function placedFootprint(module: ModuleInstance): Box {
     return { x: module.x, y: 0, z: module.z, w: r.w, h: 0, d: r.d };
 }
 
+/** Where the module's own frame sits in the room: a quarter turn, then the shift that puts the footprint's corner on the anchor. */
+export function modulePose(module: ModuleInstance): Pose {
+    const type = moduleType(module.type);
+    const { w, d } = type.footprint(resolvedConfig(module));
+    const rest = rotateBox(box(0, 0, 0, w, 0, d), module.rotation);
+    const shift: Vec3 = vec(module.x - rest.x, 0, module.z - rest.z);
+    return compose(translation(shift), { r: QUARTER_TURNS[module.rotation], t: vec(0, 0, 0) });
+}
+
+/** The module's mechanism in the given state, placed in the room. */
+export function placedModule(module: ModuleInstance, state: ModuleState | undefined): PlacedModule {
+    const type = moduleType(module.type);
+    const mechanism = type.mechanism(resolvedConfig(module), resolvedState(type, state));
+    return placeMechanism(module.id, mechanism, modulePose(module));
+}
+
 /** Parts of a module in room coordinates for the given state. */
 export function placedParts(module: ModuleInstance, state: ModuleState | undefined): Part[] {
-    const type = moduleType(module.type);
-    const config = resolvedConfig(module);
-    const { w, d } = type.footprint(config);
-    const rest = rotateBox(box(0, 0, 0, w, 0, d), module.rotation);
-    const dx = module.x - rest.x;
-    const dz = module.z - rest.z;
-    return type.localParts(config, resolvedState(type, state)).map((p) => {
-        const r = rotateBox(p.box, module.rotation);
-        return {
-            key: `${module.id}:${p.key}`,
-            label: p.label,
-            finish: p.finish,
-            moving: p.moving,
-            solid: p.solid,
-            box: { ...r, x: r.x + dx, z: r.z + dz },
-        };
-    });
+    return [...placedModule(module, state).parts];
 }
