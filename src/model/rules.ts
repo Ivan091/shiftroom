@@ -22,9 +22,10 @@ export interface Violation {
     readonly zoneKeys: readonly string[];
 }
 
-/** A violation and the earliest transition progress at which it shows up. */
+/** A violation with the first and last transition progress at which it shows up. */
 export interface TimedViolation extends Violation {
     readonly t: number;
+    readonly end: number;
 }
 
 interface Solid {
@@ -309,12 +310,16 @@ export function zoneStatus(setup: Setup, states: Readonly<Record<string, ModuleS
 
 /**
  * Everything wrong with a transition: the rest rules at both modes and the moment rules sampled
- * evenly in between, each violation with the first progress it shows up at.
+ * evenly in between, each violation with the first and last progress it shows up at.
  */
 export function transitionViolations(setup: Setup, from: Mode, to: Mode, samples = 60): TimedViolation[] {
     const first = new Map<string, TimedViolation>();
     const note = (list: Violation[], t: number): void => {
-        for (const v of list) if (!first.has(v.id)) first.set(v.id, { ...v, t });
+        for (const v of list) {
+            const seen = first.get(v.id);
+            if (!seen) first.set(v.id, { ...v, t, end: t });
+            else first.set(v.id, { ...seen, end: t, partKeys: [...new Set([...seen.partKeys, ...v.partKeys])], zoneKeys: [...new Set([...seen.zoneKeys, ...v.zoneKeys])] });
+        }
     };
     note(modeViolations(setup, from), 0);
     for (let i = 1; i < samples; i++) {
