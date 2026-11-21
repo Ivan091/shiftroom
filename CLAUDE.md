@@ -14,11 +14,11 @@ Vite + TypeScript (strict) + Three.js, Vitest for unit tests. No framework: the 
   - `mechanism.ts`: links, joints (fixed, slide, hinge with limits), clearance zones and loads; places a mechanism in the room.
   - `catalog.ts`: module types with parameters, configuration and their jointed mechanisms; placement and quarter-turn rotation (the anchor `x, z` is always the minimum corner of the rest footprint).
   - `transition.ts`: interpolation between two modes in three stages (fold, move, unfold).
-  - `rules.ts`: the plausibility checks (clipping, room, floor, ceiling, support, joints, clearances, seats) for a state, a mode and a sampled transition.
-  - `setup.ts`: JSON validation (`parseSetup`) and serialization. `edit.ts`: immutable editing operations. `presets.ts`: ready-made setups.
-- `src/view/scene.ts`: the Three.js scene; syncs one mesh per part key, picking and floor dragging.
+  - `rules.ts`: the plausibility checks (clipping, room, floor, ceiling, support, joints, clearances, seats, screen viewing) for a state, a mode and a sampled transition.
+  - `setup.ts`: JSON validation (`parseSetup`) and serialization. `edit.ts`: immutable editing operations. `presets.ts`: the one ready-made setup.
+- `src/view/scene.ts`: the Three.js scene; syncs one mesh per part key, picking and floor dragging; a wall between the camera and the room drops to a kerb.
 - `src/ui/app.ts`: sidebar, transition bar, localStorage (`shiftroom.setup.v1`), save/load JSON.
-- `tests/`: Vitest unit tests for the model, including the sweep of every preset through every transition.
+- `tests/`: Vitest unit tests for the model, including the sweep of the preset, and of a compact and a turning-module room, through every transition.
 - `docs/mechanisms.md`: how each module works inside, joint by joint, and what the checks enforce.
 
 Coordinates: metres; x across the room width from the left wall, z into the depth from the window wall, y up.

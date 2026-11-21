@@ -24,7 +24,13 @@ export type Finish =
     | "shelf"
     | "chair"
     | "table"
-    | "door";
+    | "door"
+    | "grille"
+    | "arm"
+    | "screen"
+    | "display"
+    | "computer"
+    | "keyboard";
 
 /** What keeps a piece in place: it stands on the floor, or its back (the face at its minimum z) is fixed to a room wall. */
 export type Rest = "floor" | "wall";
@@ -83,6 +89,18 @@ export interface PlacedLoad {
     readonly props: readonly string[];
 }
 
+/** A screen in use, placed in the room: its face centre, outward normal, top edge height and the seated eye it serves. */
+export interface PlacedScreen {
+    readonly key: string;
+    readonly moduleId: string;
+    readonly link: string;
+    readonly label: string;
+    readonly center: Vec3;
+    readonly normal: Vec3;
+    readonly top: number;
+    readonly eye: Vec3;
+}
+
 /** Everything a module contributes to the room in one state. */
 export interface PlacedModule {
     readonly links: readonly { readonly id: string; readonly label: string; readonly parent?: string }[];
@@ -90,6 +108,7 @@ export interface PlacedModule {
     readonly zones: readonly Zone[];
     readonly joints: readonly PlacedJoint[];
     readonly loads: readonly PlacedLoad[];
+    readonly screens: readonly PlacedScreen[];
 }
 
 /** How a state parameter takes part in a transition: extensions fold before moves and unfold after them. */
