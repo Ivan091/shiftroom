@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { addMode, addModule, nextId, removeMode, removeModule, renameMode, setModeParam, setRoom, updateModule } from "../src/model/edit";
 import { PRESETS } from "../src/model/presets";
+import { SLIDING_ROOM } from "./rooms";
 import { parseSetup, parseSetupText, serializeSetup } from "../src/model/setup";
 import type { Setup } from "../src/model/types";
 
-const preset: Setup = PRESETS[0]!;
+const preset: Setup = SLIDING_ROOM;
 
 describe("parseSetup", () => {
     it("reads back every preset unchanged", () => {
