@@ -1,5 +1,6 @@
 import { CATALOG, moduleType, placedFootprint, placedParts, resolvedConfig, resolvedState } from "../model/catalog";
-import { restViolations, stateViolations, type TimedViolation, transitionViolations, zoneStatus } from "../model/rules";
+import { countByRule, groupViolations, isLong, type ViolationGroup } from "../model/grouping";
+import { restViolations, type Rule, stateViolations, type TimedViolation, transitionViolations, zoneStatus } from "../model/rules";
 import { addMode, addModule, removeMode, removeModule, renameMode, setModeParam, setRoom, updateModule } from "../model/edit";
 import { PRESETS } from "../model/presets";
 import { parseSetupText, serializeSetup } from "../model/setup";
@@ -12,6 +13,17 @@ const STORAGE_KEY = "shiftroom.setup.v1";
 const SNAP = 0.05;
 const SECONDS_PER_PHASE = 1.6;
 const PHASE_LABELS: Record<Phase, string> = { fold: "Fold", move: "Slide", unfold: "Unfold" };
+
+const RULE_LABELS: Record<Rule, [string, string]> = {
+    collision: ["clash", "clashes"],
+    room: ["outside the room", "outside the room"],
+    floor: ["below the floor", "below the floor"],
+    ceiling: ["through the ceiling", "through the ceiling"],
+    support: ["unsupported part", "unsupported parts"],
+    joint: ["joint problem", "joint problems"],
+    clearance: ["blocked clearance", "blocked clearances"],
+    seat: ["seat facing a wall", "seats facing a wall"],
+};
 
 const snap = (v: number): number => Math.round(v / SNAP) * SNAP;
 const round2 = (v: number): number => Math.round(v * 100) / 100;
@@ -47,6 +59,7 @@ export class App {
     private dragStart: { x: number; z: number } | undefined;
     private clashCache: { key: string; list: TimedViolation[] } | undefined;
     private showZones = true;
+    private violationsOpen: boolean | undefined;
     private positionInputs: { x: HTMLInputElement; z: HTMLInputElement } | undefined;
     private readonly view: RoomView;
     private readonly sidebar: HTMLElement;
@@ -175,15 +188,45 @@ export class App {
         return `at ${Math.round(t * 100)}%`;
     }
 
+    private rangeText(g: ViolationGroup): string {
+        if (g.end - g.start < 1e-9) return this.when(g.start);
+        const pct = (t: number): string => (t <= 0 ? this.from.name : t >= 1 ? this.to.name : `${Math.round(t * 100)}%`);
+        return `from ${pct(g.start)} to ${pct(g.end)}`;
+    }
+
     private renderWarnings(): void {
-        const list = this.transitionWarnings();
+        const groups = groupViolations(this.transitionWarnings());
         this.warnings.replaceChildren();
-        if (list.length === 0) {
+        if (groups.length === 0) {
             this.warnings.append(h("span", { class: "ok" }, `Plausible: no clipping, everything supported and every clearance free from ${this.from.name} to ${this.to.name}`));
             return;
         }
-        for (const c of list) {
-            this.warnings.append(h("button", { class: "warn", title: "Jump to this point", onClick: () => this.seek(c.t) }, `${c.message} ${this.when(c.t)}`));
+        const long = isLong(groups);
+        const open = !long || (this.violationsOpen ?? false);
+        if (long) {
+            const breakdown = countByRule(groups)
+                .map(({ rule, count }) => `${count} ${RULE_LABELS[rule][count === 1 ? 0 : 1]}`)
+                .join(", ");
+            this.warnings.append(
+                h(
+                    "button",
+                    {
+                        class: "warn-summary",
+                        "aria-expanded": String(open),
+                        title: open ? "Collapse the list" : "Show every problem",
+                        onClick: () => {
+                            this.violationsOpen = !open;
+                            this.renderWarnings();
+                        },
+                    },
+                    `${open ? "▾" : "▸"} ${groups.length} problems: ${breakdown}`,
+                ),
+            );
+        }
+        if (!open) return;
+        for (const g of groups) {
+            const times = g.count > 1 ? ` (×${g.count})` : "";
+            this.warnings.append(h("button", { class: "warn", title: "Jump to this point", onClick: () => this.seek(g.start) }, `${g.message}${times} ${this.rangeText(g)}`));
         }
     }
 

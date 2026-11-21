@@ -424,6 +424,22 @@ input[type="range"] {
     padding: 4px 8px;
 }
 
+.warnings .warn-summary {
+    flex: 1 1 100%;
+    text-align: left;
+    color: var(--warn);
+    background: var(--warn-bg);
+    border-color: #f3c3c0;
+    font-size: 12px;
+    min-height: 32px;
+    padding: 4px 8px;
+}
+
+.warnings .warn {
+    max-width: 100%;
+    text-align: left;
+}
+
 .toast {
     position: fixed;
     top: 16px;
