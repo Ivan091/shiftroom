@@ -104,4 +104,4 @@ Resting in a mode adds three more (`restViolations`):
 
 The equipment parts (monitor, arm, PC, keyboard, mouse) are their own links, so the clipping check covers them against the leaf, the cabinet, the bed side and the rest of the room. That holds at rest, while the module slides and while it turns.
 
-The tests (`tests/rules.test.ts`) sweep the preset, a compact 2.6 m room and a turning-module room through every mode and every transition in 400 steps and fail on any violation; other tests break each rule on purpose to show it is caught. In the app, the bar under the room lists every violation of the current transition, and clicking one jumps to the moment it happens.
+The tests (`tests/rules.test.ts`) sweep the preset (the turning module in a 3.0 × 3.9 m studio) and two sliding-module rooms, 4.0 m and 2.6 m, through every mode and every transition in 400 steps and fail on any violation; other tests break each rule on purpose to show it is caught. In the app, the bar under the room lists every violation of the current transition, and clicking one jumps to the moment it happens.

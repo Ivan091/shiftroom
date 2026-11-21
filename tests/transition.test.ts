@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { PRESETS } from "../src/model/presets";
+import { SLIDING_ROOM } from "./rooms";
 import { activePhases, ease, phaseBoundaries, phaseOf, transitionStates } from "../src/model/transition";
 import type { Mode, Setup } from "../src/model/types";
 
-const setup: Setup = PRESETS[0]!;
+const setup: Setup = SLIDING_ROOM;
 const [sleep, work] = setup.modes as [Mode, Mode];
 
 describe("phaseOf", () => {
@@ -58,8 +58,8 @@ describe("transitionStates", () => {
     });
 
     it("gives each active stage an equal share and skips stages with nothing to do", () => {
-        const day = PRESETS[0]!.modes[2]!;
-        const large = PRESETS[0]!;
+        const day = SLIDING_ROOM.modes[2]!;
+        const large = SLIDING_ROOM;
         expect(activePhases(large, large.modes[0]!, day)).toEqual(["fold", "move"]);
         expect(phaseBoundaries(large, large.modes[0]!, day)).toEqual([
             { phase: "fold", end: 0.5 },
