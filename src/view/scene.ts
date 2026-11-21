@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { CSS2DObject, CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
-import type { Finish, Part, Room } from "../model/types";
+import type { Pose } from "../model/geometry";
+import type { Box, Finish, Part, Room, Zone } from "../model/types";
 
 const FINISH_COLOURS: Record<Finish, number> = {
     panel: 0xece6da,
@@ -16,11 +17,26 @@ const FINISH_COLOURS: Record<Finish, number> = {
     shelf: 0xb98458,
     chair: 0xc46d48,
     table: 0xb98458,
+    door: 0xd8cdb8,
 };
 
-const WALL_HEIGHT = 2.6;
 const SELECTED = new THREE.Color(0x2f6fde);
 const CLASHING = new THREE.Color(0xe0312b);
+const ZONE_FREE = 0x3aa66b;
+const ZONE_BLOCKED = 0xe0312b;
+
+/** The matrix that turns the unit corner cube into `box` placed by `pose`. */
+function boxMatrix(box: Box, pose: Pose): THREE.Matrix4 {
+    const r = pose.r;
+    const m = new THREE.Matrix4().set(r[0], r[1], r[2], pose.t.x, r[3], r[4], r[5], pose.t.y, r[6], r[7], r[8], pose.t.z, 0, 0, 0, 1);
+    return m.multiply(new THREE.Matrix4().makeTranslation(box.x, box.y, box.z)).multiply(new THREE.Matrix4().makeScale(box.w, box.h, box.d));
+}
+
+/** A clearance zone to draw, and whether a solid part stands in it. */
+export interface ZoneView {
+    readonly zone: Zone;
+    readonly blocked: boolean;
+}
 
 /** Callbacks from the 3D view to the editor: picking and dragging modules on the floor. */
 export interface ViewEvents {
@@ -45,6 +61,11 @@ export class RoomView {
     private readonly unitEdges = new THREE.EdgesGeometry(this.unitBox);
     private readonly edgeMaterial = new THREE.LineBasicMaterial({ color: 0x2a2a2a, transparent: true, opacity: 0.35 });
     private readonly parts = new Map<string, PartMesh>();
+    private readonly zones = new THREE.Group();
+    private readonly zoneFree = new THREE.MeshBasicMaterial({ color: ZONE_FREE, transparent: true, opacity: 0.12, depthWrite: false });
+    private readonly zoneBlocked = new THREE.MeshBasicMaterial({ color: ZONE_BLOCKED, transparent: true, opacity: 0.28, depthWrite: false });
+    private readonly zoneEdgeFree = new THREE.LineBasicMaterial({ color: ZONE_FREE, transparent: true, opacity: 0.55 });
+    private readonly zoneEdgeBlocked = new THREE.LineBasicMaterial({ color: ZONE_BLOCKED, transparent: true, opacity: 0.9 });
     private readonly shell = new THREE.Group();
     private readonly raycaster = new THREE.Raycaster();
     private readonly floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -76,7 +97,7 @@ export class RoomView {
         sun.shadow.camera.bottom = -10;
         sun.shadow.bias = -0.0005;
         this.scene.add(sun, sun.target);
-        this.scene.add(this.shell);
+        this.scene.add(this.shell, this.zones);
 
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
@@ -101,14 +122,14 @@ export class RoomView {
 
     /** Rebuilds the room shell (floor, walls, grid, dimensions) and reframes the camera when the size changed. */
     setRoom(room: Room): void {
-        if (this.room && this.room.width === room.width && this.room.depth === room.depth) return;
+        if (this.room && this.room.width === room.width && this.room.depth === room.depth && this.room.height === room.height) return;
         const reframe = !this.room;
         this.room = room;
         this.shell.traverse((o) => {
             if (o instanceof CSS2DObject) o.element.remove();
         });
         this.shell.clear();
-        const { width: w, depth: d } = room;
+        const { width: w, depth: d, height: wallHeight } = room;
 
         const floor = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshStandardMaterial({ color: 0xe2d6c3, roughness: 0.9 }));
         floor.rotation.x = -Math.PI / 2;
@@ -132,8 +153,8 @@ export class RoomView {
             this.shell.add(m);
         };
         const t = 0.08;
-        wall(w + 2 * t, WALL_HEIGHT, t, -t, 0, -t);
-        wall(t, WALL_HEIGHT, d + t, -t, 0, 0);
+        wall(w + 2 * t, wallHeight, t, -t, 0, -t);
+        wall(t, wallHeight, d + t, -t, 0, 0);
         wall(t, 0.12, d + t, w, 0, 0);
         wall(w + 2 * t, 0.12, t, -t, 0, d);
 
@@ -156,7 +177,7 @@ export class RoomView {
     frame(): void {
         if (!this.room) return;
         const { width: w, depth: d } = this.room;
-        const radius = Math.hypot(w, d, WALL_HEIGHT) / 2;
+        const radius = Math.hypot(w, d, this.room.height) / 2;
         const vertical = THREE.MathUtils.degToRad(this.camera.fov) / 2;
         const horizontal = Math.atan(Math.tan(vertical) * this.camera.aspect);
         const distance = (radius / Math.sin(Math.min(vertical, horizontal))) * 1.1;
@@ -176,9 +197,9 @@ export class RoomView {
             const visible = p.box.w > 1e-3 && p.box.h > 1e-3 && p.box.d > 1e-3;
             mesh.visible = visible;
             if (!visible) continue;
-            mesh.scale.set(p.box.w, p.box.h, p.box.d);
-            mesh.position.set(p.box.x, p.box.y, p.box.z);
-            const moduleId = p.key.slice(0, p.key.indexOf(":"));
+            mesh.matrix.copy(boxMatrix(p.box, p.pose));
+            mesh.matrixWorldNeedsUpdate = true;
+            const moduleId = p.moduleId;
             const material = mesh.material;
             if (clashing.has(p.key)) {
                 material.emissive.copy(CLASHING);
@@ -198,6 +219,22 @@ export class RoomView {
         }
     }
 
+    /** Draws clearance zones as translucent boxes: green while free, red where a solid part stands in them. */
+    setZones(zones: readonly ZoneView[]): void {
+        this.zones.clear();
+        for (const { zone, blocked } of zones) {
+            const mesh = new THREE.Mesh(this.unitBox, blocked ? this.zoneBlocked : this.zoneFree);
+            mesh.matrixAutoUpdate = false;
+            mesh.matrix.copy(boxMatrix(zone.box, zone.pose));
+            mesh.raycast = () => undefined;
+            mesh.renderOrder = 1;
+            const edges = new THREE.LineSegments(this.unitEdges, blocked ? this.zoneEdgeBlocked : this.zoneEdgeFree);
+            edges.raycast = () => undefined;
+            mesh.add(edges);
+            this.zones.add(mesh);
+        }
+    }
+
     /** The current frame as a PNG data URL. */
     snapshot(): string {
         this.renderer.render(this.scene, this.camera);
@@ -207,9 +244,10 @@ export class RoomView {
     private createPart(p: Part): PartMesh {
         const material = new THREE.MeshStandardMaterial({ color: FINISH_COLOURS[p.finish], roughness: 0.75 });
         const mesh = new THREE.Mesh(this.unitBox, material);
+        mesh.matrixAutoUpdate = false;
         mesh.castShadow = p.solid;
         mesh.receiveShadow = true;
-        mesh.userData.moduleId = p.key.slice(0, p.key.indexOf(":"));
+        mesh.userData.moduleId = p.moduleId;
         const edges = new THREE.LineSegments(this.unitEdges, this.edgeMaterial);
         edges.raycast = () => undefined;
         mesh.add(edges);

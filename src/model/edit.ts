@@ -1,5 +1,5 @@
 import { moduleType, placedFootprint, SLIDING } from "./catalog";
-import { ROOM_LIMITS } from "./setup";
+import { HEIGHT_LIMITS, ROOM_LIMITS } from "./setup";
 import type { Mode, ModuleInstance, Room, Setup } from "./types";
 
 /** The lowest `<prefix>-<n>` id not yet taken. */
@@ -82,5 +82,6 @@ export function removeMode(setup: Setup, id: string): Setup {
 /** Changes the room size, clamped to the supported range. */
 export function setRoom(setup: Setup, room: Room): Setup {
     const fit = (v: number): number => Math.min(ROOM_LIMITS.max, Math.max(ROOM_LIMITS.min, v));
-    return { ...setup, room: { width: fit(room.width), depth: fit(room.depth) } };
+    const height = Math.min(HEIGHT_LIMITS.max, Math.max(HEIGHT_LIMITS.min, room.height));
+    return { ...setup, room: { width: fit(room.width), depth: fit(room.depth), height } };
 }
