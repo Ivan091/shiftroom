@@ -1,5 +1,5 @@
 import { placedModule } from "./catalog";
-import { apply, bounds, contains, corners, dot, type Obb, obb, penetration, radiusAlong, rotate, vec, type Vec3 } from "./geometry";
+import { apply, bounds, contains, corners, dot, length, type Obb, obb, penetration, radiusAlong, rotate, sub, vec, type Vec3 } from "./geometry";
 import { modeStates, transitionStates } from "./transition";
 import type { Box, Mode, ModuleState, Part, PlacedModule, Setup, Zone } from "./types";
 
@@ -9,8 +9,15 @@ export const TOLERANCE = 0.005;
 /** How much open floor a seat needs between its legroom and the wall it faces, in metres. */
 export const SEAT_VIEW = 0.8;
 
+/**
+ * Where a screen in use may sit relative to the seated eye: its face `near`..`far` metres away, its
+ * top edge at most `above` over and at most `below` under eye level, and its face turned at most
+ * `angle` degrees away from the eye.
+ */
+export const VIEW = { near: 0.5, far: 0.85, above: 0.05, below: 0.3, angle: 30 } as const;
+
 /** The physical rule a violation breaks. */
-export type Rule = "collision" | "room" | "floor" | "ceiling" | "support" | "joint" | "clearance" | "seat";
+export type Rule = "collision" | "room" | "floor" | "ceiling" | "support" | "joint" | "clearance" | "seat" | "view";
 
 /** One broken rule, with the parts and zones to highlight. `id` is stable across samples of a transition. */
 export interface Violation {
@@ -259,10 +266,29 @@ function seats(s: Scene, out: Collector): void {
     }
 }
 
+function screens(s: Scene, out: Collector): void {
+    for (const screen of s.placed.flatMap((p) => p.screens)) {
+        const who = `${screen.label} (${name(s.setup, screen.moduleId)})`;
+        const keys = (s.byLink.get(screen.link) ?? []).map((x) => x.part.key);
+        const toEye = sub(screen.eye, screen.center);
+        const distance = length(toEye);
+        if (distance < VIEW.near || distance > VIEW.far) {
+            out.add(`view|${screen.key}|distance`, "view", screen.moduleId, `${who} is ${distance.toFixed(2)} m from the eyes, not ${VIEW.near}-${VIEW.far} m`, keys);
+        }
+        const rise = screen.top - screen.eye.y;
+        if (rise > VIEW.above) out.add(`view|${screen.key}|high`, "view", screen.moduleId, `${who} rises ${rise.toFixed(2)} m above eye level`, keys);
+        if (-rise > VIEW.below) out.add(`view|${screen.key}|low`, "view", screen.moduleId, `${who} sits ${(-rise).toFixed(2)} m below eye level`, keys);
+        const facing = distance > 1e-9 ? dot(screen.normal, toEye) / (distance * length(screen.normal)) : 1;
+        const off = (Math.acos(Math.min(1, Math.max(-1, facing))) * 180) / Math.PI;
+        if (off > VIEW.angle) out.add(`view|${screen.key}|facing`, "view", screen.moduleId, `${who} is turned ${off.toFixed(0)}° away from the chair`, keys);
+    }
+}
+
 /**
  * Checks already placed modules against the room of `setup`. The moment rules always apply: no
  * clipping, nothing outside the room, everything carried, joints within their limits. A resting
- * state (`rest`) must also keep its clearance zones free and its seats facing into the room.
+ * state (`rest`) must also keep its clearance zones free, its seats facing into the room and its
+ * screens at a sane height and distance from the eye.
  */
 export function placedViolations(setup: Setup, placed: readonly PlacedModule[], rest: boolean): Violation[] {
     const s = scene(setup, placed);
@@ -274,6 +300,7 @@ export function placedViolations(setup: Setup, placed: readonly PlacedModule[], 
     if (rest) {
         clearances(s, out);
         seats(s, out);
+        screens(s, out);
     }
     return out.list();
 }

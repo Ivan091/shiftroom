@@ -18,6 +18,12 @@ const FINISH_COLOURS: Record<Finish, number> = {
     chair: 0xc46d48,
     table: 0xb98458,
     door: 0xd8cdb8,
+    grille: 0x9a958c,
+    arm: 0x8d939b,
+    screen: 0x23262b,
+    display: 0x3b5f8f,
+    computer: 0x30343a,
+    keyboard: 0x45494f,
 };
 
 const SELECTED = new THREE.Color(0x2f6fde);
@@ -50,6 +56,16 @@ interface PartMesh {
     readonly edges: THREE.LineSegments;
 }
 
+/** One wall of the room shell: shown full height, or cut down to its kerb while the camera is outside it. */
+interface RoomWall {
+    readonly mesh: THREE.Mesh;
+    readonly height: number;
+    readonly kerb: number;
+    readonly centre: THREE.Vector3;
+    readonly outward: THREE.Vector3;
+    readonly extras: readonly THREE.Object3D[];
+}
+
 /** The Three.js scene: room shell, module boxes kept in sync by part key, orbit camera and floor dragging. */
 export class RoomView {
     private readonly renderer: THREE.WebGLRenderer;
@@ -67,6 +83,7 @@ export class RoomView {
     private readonly zoneEdgeFree = new THREE.LineBasicMaterial({ color: ZONE_FREE, transparent: true, opacity: 0.55 });
     private readonly zoneEdgeBlocked = new THREE.LineBasicMaterial({ color: ZONE_BLOCKED, transparent: true, opacity: 0.9 });
     private readonly shell = new THREE.Group();
+    private walls: RoomWall[] = [];
     private readonly raycaster = new THREE.Raycaster();
     private readonly floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     private room: Room | undefined;
@@ -115,6 +132,7 @@ export class RoomView {
         this.resize();
         this.renderer.setAnimationLoop(() => {
             this.controls.update();
+            this.cutAwayWalls();
             this.renderer.render(this.scene, this.camera);
             this.labels.render(this.scene, this.camera);
         });
@@ -145,24 +163,29 @@ export class RoomView {
         this.shell.add(new THREE.LineSegments(gridGeometry, new THREE.LineBasicMaterial({ color: 0xb9ab95, transparent: true, opacity: 0.5 })));
 
         const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xfbfaf7, roughness: 1, side: THREE.DoubleSide });
-        const wall = (sx: number, sy: number, sz: number, x: number, y: number, z: number): void => {
-            const m = new THREE.Mesh(this.unitBox, wallMaterial);
-            m.scale.set(sx, sy, sz);
-            m.position.set(x, y, z);
-            m.receiveShadow = true;
-            this.shell.add(m);
-        };
         const t = 0.08;
-        wall(w + 2 * t, wallHeight, t, -t, 0, -t);
-        wall(t, wallHeight, d + t, -t, 0, 0);
-        wall(t, 0.12, d + t, w, 0, 0);
-        wall(w + 2 * t, 0.12, t, -t, 0, d);
+        const kerb = 0.12;
+        const wall = (box: Box, centre: THREE.Vector3, outward: THREE.Vector3, extras: THREE.Object3D[] = []): RoomWall => {
+            const mesh = new THREE.Mesh(this.unitBox, wallMaterial);
+            mesh.scale.set(box.w, box.h, box.d);
+            mesh.position.set(box.x, box.y, box.z);
+            mesh.receiveShadow = true;
+            this.shell.add(mesh);
+            return { mesh, height: box.h, kerb, centre, outward, extras };
+        };
 
         const windowWidth = Math.min(1.4, w * 0.5);
         const glass = new THREE.Mesh(this.unitBox, new THREE.MeshStandardMaterial({ color: 0xa9d0ee, emissive: 0x6a9cc4, emissiveIntensity: 0.35 }));
         glass.scale.set(windowWidth, 1.3, 0.02);
         glass.position.set((w - windowWidth) / 2, 0.9, -0.005);
         this.shell.add(glass);
+
+        this.walls = [
+            wall({ x: -t, y: 0, z: -t, w: w + 2 * t, h: wallHeight, d: t }, new THREE.Vector3(w / 2, 0, 0), new THREE.Vector3(0, 0, -1), [glass]),
+            wall({ x: -t, y: 0, z: 0, w: t, h: wallHeight, d: d + t }, new THREE.Vector3(0, 0, d / 2), new THREE.Vector3(-1, 0, 0)),
+            wall({ x: w, y: 0, z: 0, w: t, h: wallHeight, d: d + t }, new THREE.Vector3(w, 0, d / 2), new THREE.Vector3(1, 0, 0)),
+            wall({ x: -t, y: 0, z: d, w: w + 2 * t, h: wallHeight, d: t }, new THREE.Vector3(w / 2, 0, d), new THREE.Vector3(0, 0, 1)),
+        ];
 
         this.shell.add(this.label(`${w.toFixed(2)} m`, w / 2, 0.02, d + 0.35, "dim"));
         this.shell.add(this.label(`${d.toFixed(2)} m`, w + 0.35, 0.02, d / 2, "dim"));
@@ -171,6 +194,15 @@ export class RoomView {
 
         if (reframe) this.frame();
         else this.controls.target.set(w / 2, 0.6, d / 2);
+    }
+
+    /** Lowers every wall the camera looks through to a kerb, so the room reads like a doll's house from any side. */
+    private cutAwayWalls(): void {
+        for (const wall of this.walls) {
+            const outside = this.camera.position.clone().sub(wall.centre).dot(wall.outward) > 0;
+            wall.mesh.scale.y = outside ? wall.kerb : wall.height;
+            for (const extra of wall.extras) extra.visible = !outside;
+        }
     }
 
     /** Points the camera at the whole room from the entrance side. */

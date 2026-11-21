@@ -1,5 +1,5 @@
 import { compose, type Pose, translation, vec, type Vec3 } from "./geometry";
-import { box, type Link, type LoadSpec, type Mechanism, piece, type Piece, placeMechanism, span, type ZoneSpec } from "./mechanism";
+import { box, type Link, type LoadSpec, type Mechanism, piece, type Piece, placeMechanism, type ScreenSpec, span, type ZoneSpec } from "./mechanism";
 import type { Box, ModuleInstance, ModuleState, ParamSpec, Part, PlacedModule, Rotation } from "./types";
 
 /** A configuration value of a module type, such as its length. */
@@ -30,7 +30,7 @@ export const SLIDING = {
     activeLength: 2.0,
     lengths: [2.6, 4.0, 5.3],
     board: 0.02,
-    spineX: 0.12,
+    spineX: 0.135,
     spineDepth: 0.03,
     plinth: 0.08,
 } as const;
@@ -54,17 +54,55 @@ export const BED = {
     leg: 0.04,
 } as const;
 
-/** The drop-leaf desk on the -x face: the leaf hangs from a hinge at desk height and is propped by two swing-out gate legs. */
+/**
+ * The fall-front desk on the -x face. The leaf hangs on flap hinges at its back edge, `hingeX`
+ * inside the face at desk height: level it reaches `depth` out of the face, raised it stands upright
+ * in front of the screen compartment with its top facing in. Two gate legs, which close the lower
+ * cavity as doors, swing out under its front half.
+ */
 export const DESK = {
+    hingeX: 0.025,
     hingeY: 0.75,
     depth: 0.7,
     width: 1.8,
     z: 0.1,
     top: 0.025,
-    gateX: 0.04,
+    gateX: 0,
     gate: 0.02,
     gateLength: 0.66,
 } as const;
+
+/** Length of the leaf from its hinge to its front edge. */
+const LEAF = DESK.depth + DESK.hingeX;
+
+/** Height of the raised leaf's top edge, which is also the roof of the screen compartment. */
+export const DESK_CLOSED_TOP = DESK.hingeY + LEAF;
+
+/**
+ * The hidden workstation behind the leaf: a 27-inch monitor on a two-segment wall arm in the screen
+ * compartment above the desk, a one-litre mini PC behind the grille below it, and a keyboard and
+ * mouse that ride on the leaf. Sizes are those of real equipment; see docs/mechanisms.md.
+ */
+export const WORKSTATION = {
+    screen: { w: 0.615, h: 0.37, d: 0.05 },
+    screenX: 0.03,
+    screenY: 0.8,
+    headOffset: 0.03,
+    armLength: 0.15,
+    arm: 0.03,
+    armY: 0.9,
+    pc: { w: 0.035, h: 0.183, d: 0.179 },
+    pcX: 0.055,
+    pcY: 0.1,
+    pcGap: 0.08,
+    keyboard: { w: 0.36, d: 0.13, h: 0.025 },
+    keyboardFromEdge: 0.1,
+    eyeBehindEdge: 0.2,
+    eyeHeight: 1.2,
+} as const;
+
+/** Where the leaf, the gate legs and the screen arm move within the desk's 0..1 motion; closing runs it backwards. */
+export const DESK_STEPS = { leaf: [0, 0.35], gates: [0.35, 0.55], screen: [0.6, 1] } as const;
 
 /** The turning module: how far it pulls away from the wall before it turns. */
 export const TURNING = { pull: 0.85, pin: 0.03 } as const;
@@ -93,7 +131,7 @@ const st = (state: ModuleState, spec: ParamSpec): number => {
 const slideParam: ParamSpec = { key: "slide", label: "Position on rail", kind: "move", fallback: 0 };
 const turnParam: ParamSpec = { key: "turn", label: "Pull out, turn, push back", kind: "move", fallback: 0 };
 const bedParam: ParamSpec = { key: "bed", label: "Bed", kind: "extend", fallback: 0 };
-const deskParam: ParamSpec = { key: "desk", label: "Desk", kind: "extend", fallback: 0 };
+const deskParam: ParamSpec = { key: "desk", label: "Workstation", kind: "extend", fallback: 0 };
 const lengthSpec: ConfigSpec = {
     key: "length",
     label: "Module length",
@@ -116,6 +154,11 @@ function activeCarcass(): Piece[] {
     const sx = SLIDING.spineX;
     const sx1 = sx + SLIDING.spineDepth;
     const bedPivotZ1 = BED.pivotZ + BED.width;
+    const mid = deskMid();
+    const ws = WORKSTATION;
+    const bracketY = ws.armY;
+    const pcZ0 = mid - ws.pc.d / 2;
+    const pcZ1 = mid + ws.pc.d / 2;
     return [
         piece("plinth", label, "panel", span(sx1, t - b, 0, SLIDING.plinth, b, active - b), { rest: "floor" }),
         piece("bottom", label, "panel", span(sx, t, SLIDING.plinth, SLIDING.plinth + b, b, active - b)),
@@ -123,14 +166,23 @@ function activeCarcass(): Piece[] {
         piece("end", label, "panel", span(0, t, 0, top, 0, b), { rest: "floor" }),
         piece("divider", label, "panel", span(0, t, 0, top, active - b, active), { rest: "floor" }),
         piece("top", label, "panel", span(0, t, top, SLIDING.height, 0, active)),
-        piece("shelves", "Shelves above the desk", "panel", span(0, sx, DESK.hingeY, top, b, active - b)),
+        piece("shelves", "Shelves above the desk", "panel", span(0, sx, DESK_CLOSED_TOP, top, b, active - b)),
+        piece("desk-board", "Desk hinge rail", "panel", span(DESK.hingeX, sx, DESK.hingeY - DESK.top, DESK.hingeY, b, active - b)),
+        piece("frame-a", label, "panel", span(0, DESK.gate, DESK.hingeY - DESK.top, DESK_CLOSED_TOP, b, DESK.z)),
+        piece("frame-b", label, "panel", span(0, DESK.gate, DESK.hingeY - DESK.top, DESK_CLOSED_TOP, DESK.z + DESK.width, active - b)),
+        piece("grille", "PC air grille", "grille", span(0, DESK.gate, 0.02, DESK.hingeY - DESK.top, gateAZ() + DESK.gateLength, gateBZ() - DESK.gateLength)),
+        piece("pc-shelf", "PC shelf", "panel", span(DESK.gate, sx, ws.pcY - b, ws.pcY, pcZ0 - ws.pcGap - 0.1, pcZ1 + ws.pcGap + 0.1)),
+        piece("cable-duct", "Cable duct", "arm", span(sx - 0.02, sx, ws.pcY + ws.pc.h + 0.02, bracketY + 0.02, pcZ1 + ws.pcGap + 0.015, pcZ1 + ws.pcGap + 0.055)),
+        piece("arm-bracket", "Monitor arm wall plate", "arm", span(armPivotX() - ws.arm / 2, sx, bracketY - 0.04, bracketY, mid - 0.03, mid + 0.03)),
         piece("bracket-a", "Bed pivot bracket", "post", span(BED.pivotX - 0.04, BED.pivotX + 0.04, BED.pivotY - 0.04, BED.pivotY + 0.04, b, BED.pivotZ)),
         piece("bracket-b", "Bed pivot bracket", "post", span(BED.pivotX - 0.04, BED.pivotX + 0.04, BED.pivotY - 0.04, BED.pivotY + 0.04, bedPivotZ1, active - b)),
-        piece("stile-a", "Gate leg hinge stile", "post", span(DESK.gateX - 0.01, DESK.gateX + 0.01, 0, DESK.hingeY - DESK.top, b, gateAZ())),
-        piece("stile-b", "Gate leg hinge stile", "post", span(DESK.gateX - 0.01, DESK.gateX + 0.01, 0, DESK.hingeY - DESK.top, gateBZ(), active - b)),
+        piece("stile-a", "Gate leg hinge stile", "panel", span(DESK.gateX, DESK.gateX + DESK.gate, 0, DESK.hingeY - DESK.top, b, gateAZ())),
+        piece("stile-b", "Gate leg hinge stile", "panel", span(DESK.gateX, DESK.gateX + DESK.gate, 0, DESK.hingeY - DESK.top, gateBZ(), active - b)),
     ];
 }
 
+const deskMid = (): number => DESK.z + DESK.width / 2;
+const armPivotX = (): number => WORKSTATION.screenX + WORKSTATION.screen.d + WORKSTATION.headOffset;
 const gateAZ = (): number => DESK.z + 0.01;
 const gateBZ = (): number => DESK.z + DESK.width - 0.01;
 
@@ -182,43 +234,139 @@ function bedLinks(parent: string, open: number): Link[] {
 export const BED_FOOT = BED.pivotX - BED.head + BED.length;
 
 /**
- * The desk leaf and its two gate legs. The leaf lifts from hanging to level over the first 60 % of
- * `open`; only then do the gate legs swing out under it, and they fold away first when it closes.
+ * The desk leaf with the keyboard on it, its two gate legs and the screen on its arm. Opening runs
+ * the steps of `DESK_STEPS` in order: the leaf falls from upright to level, the gate legs swing out
+ * under it, then the arm carries the screen straight out of its compartment. Closing runs them in
+ * reverse, so the screen is home before the leaf rises in front of it.
  */
 function deskLinks(parent: string, open: number): Link[] {
-    const leaf = QUARTER * (1 - ramp(open, 0, 0.6));
-    const swing = ramp(open, 0.6, 1);
+    const leaf = -QUARTER * (1 - ramp(open, ...DESK_STEPS.leaf));
+    const swing = ramp(open, ...DESK_STEPS.gates);
+    const reach = QUARTER * ramp(open, ...DESK_STEPS.screen);
     const gateHeight = DESK.hingeY - DESK.top;
     const loaded = isOpen(open) ? { rest: "floor" as const } : {};
+    const ws = WORKSTATION;
+    const mid = deskMid() - DESK.z;
+    const kb = ws.keyboard;
+    const kbFront = -LEAF + ws.keyboardFromEdge;
+    const L = ws.armLength;
+    const a = ws.arm;
+    const headY = ws.armY + 2 * a;
+    const screenBack = -ws.headOffset;
+    const screenFront = screenBack - ws.screen.d;
     return [
         {
             key: "desk",
             label: "Desk",
             parent,
-            joint: { kind: "hinge", origin: vec(0, DESK.hingeY, DESK.z), axis: vec(0, 0, 1), value: leaf, min: 0, max: QUARTER },
-            pieces: [piece("top", "Desk", "desk", span(-DESK.depth, 0, -DESK.top, 0, 0, DESK.width))],
+            joint: { kind: "hinge", origin: vec(DESK.hingeX, DESK.hingeY, DESK.z), axis: vec(0, 0, 1), value: leaf, min: -QUARTER, max: 0 },
+            pieces: [piece("top", "Desk", "desk", span(-LEAF, 0, -DESK.top, 0, 0, DESK.width))],
+        },
+        {
+            key: "keyboard",
+            label: "Keyboard and mouse",
+            parent: "desk",
+            joint: { kind: "fixed", origin: vec(0, 0, 0) },
+            pieces: [
+                piece("keyboard", "Keyboard", "keyboard", span(kbFront, kbFront + kb.d, 0, kb.h, mid - kb.w / 2, mid + kb.w / 2)),
+                piece("mouse", "Mouse", "keyboard", span(kbFront + 0.005, kbFront + 0.125, 0, 0.035, mid + kb.w / 2 + 0.08, mid + kb.w / 2 + 0.145)),
+            ],
         },
         {
             key: "gate-a",
             label: "Desk gate leg",
             parent,
             joint: { kind: "hinge", origin: vec(DESK.gateX, 0, gateAZ()), axis: vec(0, 1, 0), value: -QUARTER * swing, min: -QUARTER, max: 0 },
-            pieces: [piece("gate", "Desk gate leg", "post", span(0, DESK.gate, 0, gateHeight, 0, DESK.gateLength), loaded)],
+            pieces: [piece("gate", "Desk gate leg", "desk", span(0, DESK.gate, 0, gateHeight, 0, DESK.gateLength), loaded)],
         },
         {
             key: "gate-b",
             label: "Desk gate leg",
             parent,
             joint: { kind: "hinge", origin: vec(DESK.gateX, 0, gateBZ()), axis: vec(0, 1, 0), value: QUARTER * swing, min: 0, max: QUARTER },
-            pieces: [piece("gate", "Desk gate leg", "post", span(0, DESK.gate, 0, gateHeight, -DESK.gateLength, 0), loaded)],
+            pieces: [piece("gate", "Desk gate leg", "desk", span(0, DESK.gate, 0, gateHeight, -DESK.gateLength, 0), loaded)],
+        },
+        {
+            key: "arm-1",
+            label: "Monitor arm",
+            parent,
+            joint: { kind: "hinge", origin: vec(armPivotX(), ws.armY, deskMid()), axis: vec(0, 1, 0), value: -reach, min: -QUARTER, max: 0 },
+            pieces: [piece("segment", "Monitor arm", "arm", span(-a / 2, a / 2, 0, a, 0, L))],
+        },
+        {
+            key: "arm-2",
+            label: "Monitor arm",
+            parent: "arm-1",
+            joint: { kind: "hinge", origin: vec(0, a, L), axis: vec(0, 1, 0), value: -Math.PI + 2 * reach, min: -Math.PI, max: 0 },
+            pieces: [piece("segment", "Monitor arm", "arm", span(-a / 2, a / 2, 0, a, 0, L))],
+        },
+        {
+            key: "screen",
+            label: "Monitor",
+            parent: "arm-2",
+            joint: { kind: "hinge", origin: vec(0, a, L), axis: vec(0, 1, 0), value: Math.PI - reach, min: QUARTER, max: Math.PI },
+            pieces: [
+                piece("head", "Monitor arm", "arm", span(screenBack, a / 2, 0, 0.08, -0.05, 0.05)),
+                piece("monitor", "Monitor", "screen", span(screenFront, screenBack, ws.screenY - headY, ws.screenY + ws.screen.h - headY, -ws.screen.w / 2, ws.screen.w / 2)),
+                piece("display", "Monitor", "display", span(screenFront - 0.002, screenFront, ws.screenY + 0.012 - headY, ws.screenY + ws.screen.h - 0.012 - headY, -ws.screen.w / 2 + 0.008, ws.screen.w / 2 - 0.008), { solid: false }),
+            ],
         },
     ];
 }
 
-/** Clearances of an open bed and desk, in the carcass frame of the section that holds them. */
-function activeZones(link: string, bed: number, desk: number): { zones: ZoneSpec[]; loads: LoadSpec[] } {
-    const zones: ZoneSpec[] = [];
+/** The screen's face and the seated eye it is checked against, while the desk is open. */
+function screenSpecs(link: string): ScreenSpec[] {
+    const ws = WORKSTATION;
+    const headY = ws.armY + 2 * ws.arm;
+    const face = -ws.headOffset - ws.screen.d;
+    return [
+        {
+            key: "screen",
+            label: "Monitor",
+            link: "screen",
+            center: vec(face, ws.screenY + ws.screen.h / 2 - headY, 0),
+            normal: vec(-1, 0, 0),
+            halfHeight: ws.screen.h / 2,
+            eye: { link, point: vec(-DESK.depth - ws.eyeBehindEdge, ws.eyeHeight, deskMid()) },
+        },
+    ];
+}
+
+/** Air gaps around the PC that must stay free in every state: towards the grille, and at both ends where it breathes in and out. */
+function ventZones(link: string): ZoneSpec[] {
+    const ws = WORKSTATION;
+    const mid = deskMid();
+    const x0 = ws.pcX;
+    const x1 = ws.pcX + ws.pc.w;
+    const y0 = ws.pcY;
+    const y1 = ws.pcY + ws.pc.h;
+    const z0 = mid - ws.pc.d / 2;
+    const z1 = mid + ws.pc.d / 2;
+    return [
+        { key: "pc-side", label: "PC air gap behind the grille", link, box: span(DESK.gate, x0, y0, y1, z0, z1) },
+        { key: "pc-intake", label: "PC air intake", link, box: span(x0, x1, y0, y1, z0 - ws.pcGap, z0) },
+        { key: "pc-exhaust", label: "PC exhaust", link, box: span(x0, x1, y0, y1, z1, z1 + ws.pcGap) },
+    ];
+}
+
+/** The one-litre mini PC, standing on its edge on a shelf behind the grille. */
+function pcLink(parent: string): Link {
+    const ws = WORKSTATION;
+    const mid = deskMid();
+    return {
+        key: "pc",
+        label: "PC",
+        parent,
+        joint: { kind: "fixed", origin: vec(0, 0, 0) },
+        pieces: [piece("pc", "PC", "computer", span(ws.pcX, ws.pcX + ws.pc.w, ws.pcY, ws.pcY + ws.pc.h, mid - ws.pc.d / 2, mid + ws.pc.d / 2))],
+    };
+}
+
+/** Clearances, loads and the screen of the bed and desk section, in the carcass frame that holds them. */
+function activeZones(link: string, bed: number, desk: number): { zones: ZoneSpec[]; loads: LoadSpec[]; screens: ScreenSpec[] } {
+    const zones: ZoneSpec[] = ventZones(link);
     const loads: LoadSpec[] = [];
+    const screens: ScreenSpec[] = [];
     const z0 = BED.pivotZ;
     const z1 = BED.pivotZ + BED.width;
     if (isOpen(bed)) {
@@ -236,8 +384,9 @@ function activeZones(link: string, bed: number, desk: number): { zones: ZoneSpec
             { key: "desk-chair", label: "Desk chair", link, box: span(-DESK.depth - 0.7, -DESK.depth, 0, 1.0, mid - 0.35, mid + 0.35) },
         );
         loads.push({ link: "desk", label: "Desk", props: ["gate-a", "gate-b"] });
+        screens.push(...screenSpecs(link));
     }
-    return { zones, loads };
+    return { zones, loads, screens };
 }
 
 const slidingWall: ModuleType = {
@@ -290,9 +439,10 @@ const slidingWall: ModuleType = {
                 pieces,
             },
             ...bedLinks("body", bed),
+            pcLink("body"),
             ...deskLinks("body", desk),
         ];
-        return { links, zones: [...zones, ...open.zones], loads: open.loads };
+        return { links, zones: [...zones, ...open.zones], loads: open.loads, screens: open.screens };
     },
 };
 
@@ -330,7 +480,7 @@ const turningModule: ModuleType = {
                 label: "Module body",
                 parent: "pin",
                 joint: { kind: "hinge", origin: vec(0, pin, 0), axis: vec(0, 1, 0), value: angle, min: 0, max: Math.PI },
-                pieces: [piece("turntable", "Turntable", "post", span(-0.1, 0.1, 0, SLIDING.plinth - pin, -0.05, 0.05))],
+                pieces: [piece("turntable", "Turntable", "post", span(-0.08, 0.08, 0, SLIDING.plinth - pin, -0.05, 0.05))],
             },
             {
                 key: "body",
@@ -340,9 +490,10 @@ const turningModule: ModuleType = {
                 pieces: turningCarcass(),
             },
             ...bedLinks("body", bed),
+            pcLink("body"),
             ...deskLinks("body", desk),
         ];
-        return { links, zones: open.zones, loads: open.loads };
+        return { links, zones: open.zones, loads: open.loads, screens: open.screens };
     },
 };
 

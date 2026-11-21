@@ -1,5 +1,5 @@
 import { apply, axisRotation, compose, IDENTITY, type Pose, rotate, scale, translation, type Vec3 } from "./geometry";
-import type { Box, Finish, PlacedJoint, PlacedLoad, PlacedModule, Part, Rest, Zone } from "./types";
+import type { Box, Finish, PlacedJoint, PlacedLoad, PlacedModule, PlacedScreen, Part, Rest, Zone } from "./types";
 
 /**
  * How a link hangs from its parent. The link's frame starts at `origin` in the parent's frame and
@@ -53,11 +53,26 @@ export interface LoadSpec {
     readonly props: readonly string[];
 }
 
+/**
+ * A screen in use: the centre and outward normal of its face and half its height, in the frame of
+ * its link, and the seated eye it is meant for, in the frame of another link.
+ */
+export interface ScreenSpec {
+    readonly key: string;
+    readonly label: string;
+    readonly link: string;
+    readonly center: Vec3;
+    readonly normal: Vec3;
+    readonly halfHeight: number;
+    readonly eye: { readonly link: string; readonly point: Vec3 };
+}
+
 /** The whole mechanism of a module in one state, in the module's own frame; links are listed parents first. */
 export interface Mechanism {
     readonly links: readonly Link[];
     readonly zones: readonly ZoneSpec[];
     readonly loads: readonly LoadSpec[];
+    readonly screens?: readonly ScreenSpec[];
 }
 
 export const box = (x: number, y: number, z: number, w: number, h: number, d: number): Box => ({ x, y, z, w, h, d });
@@ -148,5 +163,21 @@ export function placeMechanism(moduleId: string, mechanism: Mechanism, modulePos
         label: l.label,
         ...(l.parent !== undefined ? { parent: `${moduleId}:${l.parent}` } : {}),
     }));
-    return { links, parts, zones, joints, loads };
+    const screens: PlacedScreen[] = (mechanism.screens ?? []).map((sc) => {
+        const pose = poses.get(sc.link);
+        const eyePose = poses.get(sc.eye.link);
+        if (!pose || !eyePose) throw new Error(`Screen ${sc.key} of ${moduleId} refers to an unknown link`);
+        const center = apply(pose, sc.center);
+        return {
+            key: `${moduleId}:${sc.key}`,
+            moduleId,
+            link: `${moduleId}:${sc.link}`,
+            label: sc.label,
+            center,
+            normal: rotate(pose.r, sc.normal),
+            top: center.y + sc.halfHeight,
+            eye: apply(eyePose, sc.eye.point),
+        };
+    });
+    return { links, parts, zones, joints, loads, screens };
 }

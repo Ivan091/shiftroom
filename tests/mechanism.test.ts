@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BED_FOOT, DESK, placedModule, SLIDING, TURNING } from "../src/model/catalog";
+import { BED_FOOT, DESK, DESK_CLOSED_TOP, DESK_STEPS, placedModule, SLIDING, TURNING, WORKSTATION } from "../src/model/catalog";
+import { VIEW } from "../src/model/rules";
 import { bounds, obb } from "../src/model/geometry";
 import type { Box, ModuleInstance, ModuleState, Part } from "../src/model/types";
 
@@ -78,6 +79,71 @@ describe("sliding module", () => {
     });
 });
 
+describe("hidden workstation", () => {
+    const EQUIPMENT = new Set(["screen", "display", "computer", "keyboard", "arm"]);
+    const equipment = (desk: number): Part[] => placedModule(slider, { desk }).parts.filter((p) => EQUIPMENT.has(p.finish));
+    const screen = (desk: number): Box => extent(linkParts(slider, { desk }, "screen").filter((p) => p.finish === "screen"));
+
+    it("keeps the screen, the PC, the keyboard and the mouse inside the desk cavity behind the raised leaf", () => {
+        const e = extent(equipment(0));
+        expect(e.x).toBeGreaterThanOrEqual(DESK.hingeX - 1e-9);
+        expect(e.x + e.w).toBeLessThanOrEqual(SLIDING.spineX + 1e-9);
+        expect(topOf(e)).toBeLessThanOrEqual(DESK_CLOSED_TOP + 1e-9);
+        const leaf = extent(linkParts(slider, { desk: 0 }, "desk"));
+        expect(leaf.x).toBeCloseTo(0);
+        expect(leaf.y).toBeCloseTo(DESK.hingeY);
+        expect(topOf(leaf)).toBeCloseTo(DESK_CLOSED_TOP);
+        const keyboard = extent(linkParts(slider, { desk: 0 }, "keyboard"));
+        expect(keyboard.y).toBeGreaterThan(topOf(screen(0)));
+    });
+
+    it("lowers the leaf first, then swings the gate legs out, then brings the screen out; closing runs backwards", () => {
+        const stored = screen(0);
+        const level = extent(linkParts(slider, { desk: DESK_STEPS.leaf[1] }, "desk"));
+        expect(topOf(level)).toBeCloseTo(DESK.hingeY);
+        expect(extent(linkParts(slider, { desk: DESK_STEPS.leaf[1] }, "gate-a")).x).toBeCloseTo(DESK.gateX);
+        expect(extent(linkParts(slider, { desk: DESK_STEPS.gates[1] }, "gate-a")).x).toBeLessThan(-DESK.depth / 2);
+        for (const desk of [0.1, DESK_STEPS.leaf[1], DESK_STEPS.gates[1], DESK_STEPS.screen[0]]) {
+            expect(screen(desk).x).toBeCloseTo(stored.x);
+        }
+        expect(screen(0.8).x).toBeLessThan(stored.x);
+        expect(screen(1).x + screen(1).w).toBeLessThan(0);
+    });
+
+    it("carries the screen straight out, level and square to the desk", () => {
+        for (const desk of [0.6, 0.7, 0.8, 0.9, 1]) {
+            const s = screen(desk);
+            expect(s.w).toBeCloseTo(WORKSTATION.screen.d);
+            expect(s.d).toBeCloseTo(WORKSTATION.screen.w);
+            expect(s.y).toBeCloseTo(WORKSTATION.screenY);
+        }
+    });
+
+    it("puts the screen in front of the seated eye at a sane height and distance once the desk is open", () => {
+        expect(placedModule(slider, { desk: 0.99 }).screens).toEqual([]);
+        const [placed] = placedModule(slider, { desk: 1 }).screens;
+        const distance = Math.hypot(placed!.center.x - placed!.eye.x, placed!.center.y - placed!.eye.y, placed!.center.z - placed!.eye.z);
+        expect(distance).toBeGreaterThanOrEqual(VIEW.near);
+        expect(distance).toBeLessThanOrEqual(VIEW.far);
+        expect(placed!.top).toBeLessThanOrEqual(placed!.eye.y + VIEW.above);
+        expect(placed!.top).toBeGreaterThanOrEqual(placed!.eye.y - VIEW.below);
+        expect(placed!.eye.x).toBeLessThan(-DESK.depth);
+    });
+
+    it("rests the keyboard on the open desk near its front edge", () => {
+        const keyboard = extent(linkParts(slider, { desk: 1 }, "keyboard"));
+        expect(keyboard.y).toBeCloseTo(DESK.hingeY);
+        expect(keyboard.x).toBeCloseTo(-DESK.depth + WORKSTATION.keyboardFromEdge);
+    });
+
+    it("keeps the PC's air gaps as clearances in every state", () => {
+        for (const desk of [0, 0.5, 1]) {
+            const keys = placedModule(slider, { desk }).zones.map((z) => z.key);
+            expect(keys).toEqual(expect.arrayContaining(["m:pc-side", "m:pc-intake", "m:pc-exhaust"]));
+        }
+    });
+});
+
 describe("turning module", () => {
     it("pulls away from the wall, turns half a circle and comes back with the desk side out", () => {
         const body = (turn: number): Box => extent(linkParts(turner, { turn }, "body"));
@@ -86,7 +152,7 @@ describe("turning module", () => {
         expect(body(0.5).w).toBeGreaterThan(1.9);
         expect(body(1).x).toBeCloseTo(0);
         const desk = extent(linkParts(turner, { turn: 1, desk: 1 }, "desk"));
-        expect(desk.x).toBeCloseTo(SLIDING.thickness);
+        expect(desk.x).toBeCloseTo(SLIDING.thickness - DESK.hingeX);
         expect(desk.x + desk.w).toBeCloseTo(SLIDING.thickness + DESK.depth);
     });
 

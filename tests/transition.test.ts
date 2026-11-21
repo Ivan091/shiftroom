@@ -58,8 +58,8 @@ describe("transitionStates", () => {
     });
 
     it("gives each active stage an equal share and skips stages with nothing to do", () => {
-        const day = PRESETS[2]!.modes[2]!;
-        const large = PRESETS[2]!;
+        const day = PRESETS[0]!.modes[2]!;
+        const large = PRESETS[0]!;
         expect(activePhases(large, large.modes[0]!, day)).toEqual(["fold", "move"]);
         expect(phaseBoundaries(large, large.modes[0]!, day)).toEqual([
             { phase: "fold", end: 0.5 },
