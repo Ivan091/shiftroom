@@ -31,7 +31,7 @@ Coordinates: metres; x across the room width from the left wall, z into the dept
 
 ## Delivery
 
-Branch, commit (Conventional Commits), push, pull request, merge, with the global `contribute` and `ship` skills; never commit to `master`. A push to `master` runs `.github/workflows/pages.yml`, which runs the gate and deploys `dist/` to GitHub Pages (Pages source: GitHub Actions).
+Branch, commit (Conventional Commits), push, pull request, merge, with the global `contribute` and `ship` skills; never commit to `master`. The `master gate` ruleset on GitHub requires a pull request and a passing `check` job before anything reaches `master`, and blocks force pushes and deletion. Merge with `gh pr merge <url> --auto --merge --match-head-commit <sha>` instead of a plain merge: the pull request then merges by itself once `check` passes, and stays open when it fails; fix it and push again, never bypass the rule. A push to `master` runs `.github/workflows/pages.yml`, which runs the gate and deploys `dist/` to GitHub Pages (Pages source: GitHub Actions).
 
 ## Rules
 
