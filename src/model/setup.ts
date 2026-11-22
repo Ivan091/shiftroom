@@ -21,6 +21,10 @@ function str(v: unknown, where: string): string {
     return v;
 }
 
+function name(v: unknown, fallback: string): string {
+    return typeof v === "string" && v.trim() !== "" ? v.trim() : fallback;
+}
+
 function num(v: unknown, where: string): number {
     if (typeof v !== "number" || !Number.isFinite(v)) throw new SetupError(`${where} must be a number`);
     return v;
@@ -42,7 +46,7 @@ function parseModule(v: unknown, index: number): ModuleInstance {
     return {
         id: str(v.id, `${where}.id`),
         type,
-        name: str(v.name, `${where}.name`),
+        name: name(v.name, CATALOG[type]!.label),
         x: num(v.x, `${where}.x`),
         z: num(v.z, `${where}.z`),
         rotation: rotation as Rotation,
@@ -59,7 +63,8 @@ function parseMode(v: unknown, index: number, moduleIds: ReadonlySet<string>): M
     for (const [id, s] of Object.entries(raw)) {
         if (moduleIds.has(id)) states[id] = numbers(s, `${where}.states.${id}`);
     }
-    return { id: str(v.id, `${where}.id`), name: str(v.name, `${where}.name`), states };
+    const id = str(v.id, `${where}.id`);
+    return { id, name: name(v.name, id), states };
 }
 
 function unique(ids: readonly string[], what: string): void {
@@ -92,7 +97,7 @@ export function parseSetup(input: unknown): ParseResult {
         const ids = new Set(modules.map((m) => m.id));
         const modes = input.modes.map((m, i) => parseMode(m, i, ids));
         unique(modes.map((m) => m.id), "mode");
-        return { ok: true, setup: { version: 1, name: str(input.name ?? "Untitled", "name"), room: { width, depth, height }, modules, modes } };
+        return { ok: true, setup: { version: 1, name: name(input.name, "Untitled"), room: { width, depth, height }, modules, modes } };
     } catch (e) {
         if (e instanceof SetupError) return { ok: false, error: e.message };
         throw e;

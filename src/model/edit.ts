@@ -42,9 +42,21 @@ export function removeModule(setup: Setup, id: string): Setup {
     };
 }
 
-/** Changes placement, name or configuration of a module. */
+/** Changes placement, name or configuration of a module; the name is trimmed and a blank one keeps the old name. */
 export function updateModule(setup: Setup, id: string, patch: Partial<Omit<ModuleInstance, "id" | "type">>): Setup {
-    return { ...setup, modules: setup.modules.map((m) => (m.id === id ? { ...m, ...patch, config: { ...m.config, ...patch.config } } : m)) };
+    const { name, ...rest } = patch;
+    const trimmed = name?.trim();
+    return {
+        ...setup,
+        modules: setup.modules.map((m) =>
+            m.id === id ? { ...m, ...rest, name: trimmed ? trimmed : m.name, config: { ...m.config, ...patch.config } } : m,
+        ),
+    };
+}
+
+/** Renames the setup; the name is trimmed and a blank one becomes "Untitled". */
+export function renameSetup(setup: Setup, name: string): Setup {
+    return { ...setup, name: name.trim() || "Untitled" };
 }
 
 /** Sets one state value of one module in one mode, clamped to 0..1. */

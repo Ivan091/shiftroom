@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addMode, addModule, nextId, removeMode, removeModule, renameMode, setModeParam, setRoom, updateModule } from "../src/model/edit";
+import { addMode, addModule, nextId, removeMode, removeModule, renameMode, renameSetup, setModeParam, setRoom, updateModule } from "../src/model/edit";
 import { PRESETS } from "../src/model/presets";
 import { SLIDING_ROOM } from "./rooms";
 import { parseSetup, parseSetupText, serializeSetup } from "../src/model/setup";
@@ -81,5 +81,38 @@ describe("editing", () => {
         const setup = updateModule(preset, "wall-1", { config: { length: 5.3 } });
         expect(setup.modules[0]!.config).toEqual({ length: 5.3, travel: 3.1 });
         expect(setRoom(preset, { width: 0.2, depth: 40, height: 9 }).room).toEqual({ width: 1.5, depth: 12, height: 4 });
+    });
+});
+
+describe("blank names", () => {
+    it("trims names in the edit operations and keeps the old name for a blank one", () => {
+        const id = preset.modules[0]!.id;
+        const old = preset.modules[0]!.name;
+        expect(updateModule(preset, id, { name: "  Desk  " }).modules[0]!.name).toBe("Desk");
+        expect(updateModule(preset, id, { name: "   " }).modules[0]!.name).toBe(old);
+        expect(renameSetup(preset, "   ").name).toBe("Untitled");
+        expect(renameSetup(preset, " Home ").name).toBe("Home");
+    });
+
+    it("round-trips setups edited the way the UI does", () => {
+        const id = preset.modules[0]!.id;
+        let edited = renameSetup(preset, "  My room ");
+        edited = updateModule(edited, id, { name: " Bed ", x: 0.5 });
+        expect(parseSetupText(serializeSetup(edited))).toEqual({ ok: true, setup: edited });
+    });
+
+    it("parses blank names leniently instead of rejecting the setup", () => {
+        const raw = {
+            ...preset,
+            name: " ",
+            modules: preset.modules.map((m) => ({ ...m, name: "  " })),
+            modes: preset.modes.map((m) => ({ ...m, name: "" })),
+        };
+        const result = parseSetup(raw);
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.setup.name).toBe("Untitled");
+        expect(result.setup.modules.every((m) => m.name.trim() !== "")).toBe(true);
+        expect(result.setup.modes.map((m) => m.name)).toEqual(preset.modes.map((m) => m.id));
     });
 });

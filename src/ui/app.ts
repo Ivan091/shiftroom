@@ -1,7 +1,7 @@
 import { CATALOG, moduleType, placedFootprint, placedParts, resolvedConfig, resolvedState } from "../model/catalog";
 import { countByRule, groupViolations, isLong, type ViolationGroup } from "../model/grouping";
 import { restViolations, type Rule, stateViolations, type TimedViolation, transitionViolations, zoneStatus } from "../model/rules";
-import { addMode, addModule, removeMode, removeModule, renameMode, setModeParam, setRoom, updateModule } from "../model/edit";
+import { addMode, addModule, removeMode, removeModule, renameMode, renameSetup, setModeParam, setRoom, updateModule } from "../model/edit";
 import { PRESETS } from "../model/presets";
 import { parseSetupText, serializeSetup } from "../model/setup";
 import { activePhases, type Phase, phaseBoundaries, transitionStates } from "../model/transition";
@@ -29,14 +29,18 @@ const RULE_LABELS: Record<Rule, [string, string]> = {
 const snap = (v: number): number => Math.round(v / SNAP) * SNAP;
 const round2 = (v: number): number => Math.round(v * 100) / 100;
 
-function loadStored(): Setup | undefined {
+const BACKUP_KEY = "shiftroom.setup.backup";
+
+function loadStored(): { setup?: Setup; backedUp?: boolean } {
     try {
         const text = localStorage.getItem(STORAGE_KEY);
-        if (!text) return undefined;
+        if (!text) return {};
         const result = parseSetupText(text);
-        return result.ok ? result.setup : undefined;
+        if (result.ok) return { setup: result.setup };
+        localStorage.setItem(BACKUP_KEY, text);
+        return { backedUp: true };
     } catch {
-        return undefined;
+        return {};
     }
 }
 
@@ -72,7 +76,8 @@ export class App {
     private warnings!: HTMLElement;
 
     constructor(root: HTMLElement) {
-        this.setup = loadStored() ?? structuredClone(PRESETS[0]!) as Setup;
+        const stored = loadStored();
+        this.setup = stored.setup ?? structuredClone(PRESETS[0]!) as Setup;
         this.fromId = this.setup.modes[0]!.id;
         this.toId = (this.setup.modes[1] ?? this.setup.modes[0]!).id;
         this.editId = this.fromId;
@@ -101,6 +106,7 @@ export class App {
             },
         });
         this.renderAll();
+        if (stored.backedUp) this.flash("Could not restore your last setup; kept a copy");
     }
 
     private get from(): Mode {
@@ -391,7 +397,7 @@ export class App {
                 "label",
                 { class: "field" },
                 h("span", {}, "Setup name"),
-                h("input", { type: "text", value: this.setup.name, onChange: (e: Event) => this.commit({ ...this.setup, name: (e.target as HTMLInputElement).value || "Untitled" }) }),
+                h("input", { type: "text", value: this.setup.name, onChange: (e: Event) => this.commit(renameSetup(this.setup, (e.target as HTMLInputElement).value)) }),
             ),
             h(
                 "div",
@@ -547,7 +553,7 @@ export class App {
                 "label",
                 { class: "field" },
                 h("span", {}, "Name"),
-                h("input", { type: "text", value: m.name, onChange: (e: Event) => patch({ name: (e.target as HTMLInputElement).value || type.label }) }),
+                h("input", { type: "text", value: m.name, onChange: (e: Event) => patch({ name: (e.target as HTMLInputElement).value }) }),
             ),
             h("div", { class: "grid2" }, x.row, z.row),
             h(
